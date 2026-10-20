@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 from google import genai
 from google.genai import errors, types
 
-APP_VERSION = "v14"
+APP_VERSION = "v15"
 COOLDOWN_SECONDS = 60
 SKIP_WORDS = ("image", "tts", "embed", "live", "audio", "veo",
               "imagen", "robotics", "computer", "aqa")
@@ -41,17 +41,15 @@ PRESETS = {
 }
 SPEC_CHAIN = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash"]
 
-# --- Bolt.diy Inspired Master Prompts ---
 FACTORY_SYSTEM = """You are a senior software architect who writes build specifications for an AI coding agent. Turn the user's short idea into ONE complete, copy-paste-ready prompt. Output ONLY the prompt text, with no preamble and no commentary.
 
 The prompt you write must contain:
 1. GOAL: the core experience in 2-3 sentences.
-2. TECH CONSTRAINTS: Vanilla JavaScript or Three.js from cdnjs.cloudflare.com (pinned version). Modular architecture with clean file separation (e.g. index.html, style.css, game.js). No external images, fonts or audio files: draw textures on canvas and synthesize audio with Web Audio API. Touch controls for iPad Safari.
+2. TECH CONSTRAINTS: Vanilla JavaScript or Three.js from cdnjs.cloudflare.com (pinned version). Modular architecture with clean file separation (index.html, style.css, game.js). No external images, fonts or audio files: draw textures on canvas and synthesize audio with Web Audio API. Touch controls for iPad Safari.
 3. MULTI-FILE ARCHITECTURE: Name each file and its exact responsibility.
 4. MUST-HAVE vs STRETCH: Core gameplay loops first; stretch features only if safe.
-5. PERFORMANCE: Cap pixel ratio at 2, avoid per-frame allocations, profile garbage collection.
-6. ACCEPTANCE CRITERIA: A checkable list of items a script could verify.
-7. ZERO-PLACEHOLDER RULE: No TODOs, no stubs, every file and function fully written.
+5. PERFORMANCE: Cap pixel ratio at 2, avoid per-frame allocations.
+6. ZERO-PLACEHOLDER RULE: No TODOs, no stubs, every file and function fully written.
 Be specific and concise."""
 
 BUILDER_SYSTEM = """You are an expert full-stack WebGL and front-end engineer inspired by Bolt.diy.
@@ -80,7 +78,7 @@ Wrap your entire project inside a <boltArtifact> tag with individual <boltAction
 
 Rules:
 - Output ONLY the <boltArtifact> block. No explanation before or after.
-- Zero placeholders: NO `// TODO`, NO `// Implement later`, NO truncated code. Every single function must be fully written.
+- Zero placeholders: NO `// TODO`, NO `// Implement later`, NO omitted code. Every function must be fully written.
 - External libraries: ONLY from cdnjs.cloudflare.com at pinned versions.
 - Mobile first: Responsive canvas, touch controls, pixel ratio capped at 2."""
 
@@ -281,20 +279,20 @@ footer {visibility: hidden !important;}
     border: 1px solid #26283b;
     border-left: 3px solid #818cf8;
     border-radius: 8px;
-    padding: 10px 14px;
+    padding: 12px 16px;
     margin-bottom: 14px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
 }
 
 .ag-pulse-dot {
-    width: 8px;
-    height: 8px;
+    width: 9px;
+    height: 9px;
     border-radius: 50%;
     background: #818cf8;
-    box-shadow: 0 0 8px #818cf8;
+    box-shadow: 0 0 10px #818cf8;
     animation: ag-pulse 1.4s infinite ease-in-out;
     display: inline-block;
-    margin-right: 8px;
+    margin-right: 10px;
 }
 
 @keyframes ag-pulse {
@@ -417,7 +415,7 @@ div[role="radiogroup"] label:has(input:checked) {
 </style>
 """
 
-# --- Bolt.diy Multi-File & Project Extraction Engine ---
+
 def extract_project_files(text):
     """Extracts multiple files from <boltAction> tags or falls back to single-file HTML."""
     files = {}
@@ -429,7 +427,6 @@ def extract_project_files(text):
             clean_path = path.strip().lstrip("/")
             files[clean_path] = content.strip()
     else:
-        # Fallback to standard Markdown ```html
         m = re.search(r"```(?:html)?\s*\n(.*?)```", text, re.S)
         code = m.group(1) if m else text
         start = re.search(r"<!doctype html|<html", code, re.I)
@@ -438,6 +435,7 @@ def extract_project_files(text):
         files["index.html"] = code.strip()
 
     return files
+
 
 def bundle_for_preview(files):
     """Virtually stitches modular CSS/JS files into HTML for live iframe execution."""
@@ -451,7 +449,6 @@ def bundle_for_preview(files):
         return "<h3>Error: No HTML file found in project</h3>"
 
     assembled = main_html
-    # Virtually inline local CSS and JS references so iframe can run offline
     for name, content in files.items():
         base = os.path.basename(name)
         if name.endswith(".css"):
@@ -461,14 +458,15 @@ def bundle_for_preview(files):
 
     return inject_errors(assembled)
 
+
 def create_zip_bundle(files):
-    """Builds an in-memory ZIP file for one-tap download."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, content in files.items():
             zf.writestr(name, content)
     buf.seek(0)
     return buf.getvalue()
+
 
 def inject_errors(html):
     m = re.search(r"<head[^>]*>", html, re.I)
@@ -576,17 +574,32 @@ class KeyPool:
                         model=model, contents=prompt, config=config
                     )
                     
+                    # Robust parsing of candidate parts (separating thought trace from code output)
                     thoughts = ""
+                    code_text = ""
                     try:
-                        for candidate in response.candidates:
-                            for part in candidate.content.parts:
-                                if getattr(part, "thought", False):
-                                    thoughts += (part.text or "") + "\n"
+                        if response.candidates:
+                            for cand in response.candidates:
+                                if cand.content and cand.content.parts:
+                                    for part in cand.content.parts:
+                                        if getattr(part, "thought", False):
+                                            thoughts += (part.text or "") + "\n"
+                                        else:
+                                            code_text += (part.text or "")
                     except Exception:
                         pass
 
+                    if not code_text.strip():
+                        try:
+                            code_text = response.text or ""
+                        except Exception:
+                            pass
+
+                    if not code_text.strip():
+                        raise RuntimeError(f"{model} completed thinking but output was empty. The output token ceiling may have been hit.")
+
                     log.append(f"{model} key {i+1}: OK in {time.time()-t0:.1f}s")
-                    return (response.text or ""), model, i + 1, log, thoughts
+                    return code_text, model, i + 1, log, thoughts
 
                 except errors.APIError as e:
                     code = e.code
@@ -702,7 +715,7 @@ class BackgroundWorker:
             self.state["result_raw"] = None
             self.state["thoughts"] = None
             self.state["error"] = None
-            self.state["logs"] = [f"[{time.strftime('%H:%M:%S')}] Agent dispatched."]
+            self.state["logs"] = [f"[{time.strftime('%H:%M:%S')}] Agent started in background."]
             self._save_to_disk()
 
             self.thread = threading.Thread(
@@ -916,7 +929,6 @@ st.markdown(CSS, unsafe_allow_html=True)
 if not password_ok():
     st.stop()
 
-# Auto-migration for legacy state
 if "mode" not in st.session_state or st.session_state["mode"] not in PRESETS:
     st.session_state["mode"] = "High"
 
@@ -938,9 +950,9 @@ if not models:
 
 restore_last()
 
-# Check background task results from disk
+# Process background worker completion
 res_raw, err, used, task, secs, thoughts = worker.clear_finished()
-if res_raw:
+if res_raw and len(res_raw.strip()) > 0:
     if thoughts:
         st.session_state["last_thoughts"] = thoughts
     parsed_files = extract_project_files(res_raw)
@@ -956,7 +968,7 @@ if res_raw:
         st.session_state["last_used_model"] = used
         say("assistant", f"Refined {len(parsed_files)} file(s) in {secs:.0f}s via **{used}**. Canvas updated!")
 elif err:
-    say("assistant", f"Task aborted: {err}")
+    say("assistant", f"Task notice: {err}")
 
 # ---------------- Sidebar ----------------
 with st.sidebar:
@@ -964,7 +976,8 @@ with st.sidebar:
     st.caption(f"{len(pool.keys)} project keys loaded | Multi-File Engine")
     
     words = st.number_input("Spec Word Target (0 = Auto)", 0, 3000, 0, 50)
-    
+    auto_build_toggle = st.toggle("Auto-Synthesize (Bolt Style)", value=True, help="Automatically builds the project immediately after drafting the spec.")
+
     st.divider()
     st.markdown("<b>Execution Settings</b>", unsafe_allow_html=True)
     patience_choice = st.radio(
@@ -1094,17 +1107,16 @@ if is_busy:
     )
     col_c1, col_c2 = st.columns([5, 1])
     with col_c1:
-        with st.expander("Live Task Operations", expanded=False):
+        with st.expander("Live Agent Operations Stream", expanded=False):
             st.code("\n".join(snap["logs"]), language="text")
     with col_c2:
-        if st.button("Abort"):
+        if st.button("Abort Task"):
             worker.stop()
             st.rerun()
 
     time.sleep(2.5)
     st.rerun()
 
-# Helper to format files for Refine prompt
 def format_files_for_prompt(files):
     out = []
     for path, code in files.items():
@@ -1116,12 +1128,12 @@ if stage == "idea":
     st.markdown(
         '<div class="gem-hero">'
         '<div class="gem-greeting">Hi, <span>what’s on your mind?</span></div>'
-        '<div class="gem-tag">✦ Gemini 3.8 Flash • Bolt Multi-File Architecture</div>'
+        '<div class="gem-tag">✦ Gemini 3.8 Flash • Bolt 1-Click Synthesis</div>'
         '</div>',
         unsafe_allow_html=True,
     )
 
-    st.markdown("<b>Try building:</b>", unsafe_allow_html=True)
+    st.markdown("<b>Instant presets:</b>", unsafe_allow_html=True)
     c_s1, c_s2, c_s3 = st.columns(3)
     preset_prompt = None
     with c_s1:
@@ -1143,13 +1155,26 @@ if stage == "idea":
         say("user", text)
         ph = st.empty()
         try:
-            ph.caption(f"Synthesizing specification with {spec_chain[0]}...")
+            ph.caption(f"Architecting specification with {spec_chain[0]}...")
             spec = make_spec(pool, spec_chain, text, int(words), notify=lambda m: ph.caption(m))
             st.session_state["spec"] = spec
-            st.session_state["stage"] = "spec"
-            say("assistant", f"Specification ready ({len(spec.split())} words). Review below and trigger **Synthesize**.")
+            ph.empty()
+            
+            if auto_build_toggle:
+                # 1-Click Bolt flow: Automatically start synthesizing code immediately!
+                st.session_state["target_model"] = build_chain_list[0]
+                st.session_state["stage"] = "spec"
+                say("assistant", f"Specification mapped ({len(spec.split())} words). Dispatched synthesizer agent to build project...")
+                worker.start(
+                    "Build",
+                    background_task_runner,
+                    (spec, build_chain_list, BUILDER_SYSTEM, build_thinking, 32000, False)
+                )
+            else:
+                st.session_state["stage"] = "spec"
+                say("assistant", f"Specification mapped ({len(spec.split())} words). Review below and trigger **Synthesize**.")
         except Exception as e:
-            say("assistant", f"Error: {e}")
+            say("assistant", f"Notice: {e}")
         st.rerun()
 
 else:
@@ -1188,9 +1213,7 @@ else:
                 st.markdown(msg["text"])
 
         if stage == "spec":
-            st.text_area("Build Specification", key="spec", height=280)
-            with st.expander("Inspect Specification Markdown"):
-                st.code(st.session_state.get("spec", ""), language="markdown", wrap_lines=True)
+            st.text_area("Build Specification (Editable)", key="spec", height=240)
             if st.button("Synthesize Project", type="primary", use_container_width=True, disabled=is_busy):
                 st.session_state["target_model"] = build_chain_list[0]
                 worker.start(
@@ -1268,15 +1291,19 @@ else:
             with t_spec:
                 st.code(st.session_state.get("spec", "(no spec yet)"), language="markdown", wrap_lines=True)
         else:
+            status_text = "AGENT SYNTHESIZING CODE..." if is_busy else "CANVAS IDLE"
+            sub_text = "Building multi-file Three.js project in background..." if is_busy else "Awaiting agent build output."
+            pulse_badge = '<span class="ag-pulse-dot"></span>' if is_busy else ''
+            
             st.markdown(
                 '<div class="ag-chassis">'
                 '<div class="ag-controls"><span class="ag-c-red"></span><span class="ag-c-yellow"></span><span class="ag-c-green"></span></div>'
-                '<div class="ag-chassis-title">sandbox_idle</div>'
+                f'<div class="ag-chassis-title">{"sandbox_active" if is_busy else "sandbox_idle"}</div>'
                 '<div></div>'
                 '</div>'
-                '<div style="border: 1px solid #1a1b24; border-radius: 0 0 8px 8px; background: #0c0d14; padding: 6rem 1rem; text-align: center; color: #475569;">'
-                '<h3>CANVAS IDLE</h3>'
-                'Awaiting agent build output.'
+                f'<div style="border: 1px solid #1a1b24; border-radius: 0 0 8px 8px; background: #0c0d14; padding: 6rem 1rem; text-align: center; color: {"#818cf8" if is_busy else "#475569"};">'
+                f'<h3>{pulse_badge}{status_text}</h3>'
+                f'{sub_text}'
                 '</div>',
                 unsafe_allow_html=True,
             )
