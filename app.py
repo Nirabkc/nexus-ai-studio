@@ -1,15 +1,19 @@
+import os
 import re
 import time
+import tempfile
 import threading
 import streamlit as st
 import streamlit.components.v1 as components
 from google import genai
 from google.genai import errors, types
 
-APP_VERSION = "v6"
+APP_VERSION = "v7"
 COOLDOWN_SECONDS = 60
 SKIP_WORDS = ("image", "tts", "embed", "live", "audio", "veo",
               "imagen", "robotics", "computer", "aqa")
+SAVE_PATH = os.path.join(tempfile.gettempdir(), "nexus_last_project.html")
+SPEC_PATH = os.path.join(tempfile.gettempdir(), "nexus_last_spec.txt")
 
 PRESETS = {
     "Fast": {"build": ["gemini-3.6-flash", "gemini-3.5-flash"],
@@ -121,25 +125,113 @@ ERROR_SNIPPET = r"""<script>
 
 CSS = """
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+.stApp {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background:
+        radial-gradient(1100px 520px at 12% -8%, #1b2347 0%, transparent 62%),
+        radial-gradient(900px 480px at 100% 0%, #22183f 0%, transparent 58%),
+        #0b0d12;
+}
+[data-testid="stCode"] pre, code {
+    font-family: 'JetBrains Mono', monospace !important;
+}
+[data-testid="stHeader"] {background: transparent;}
 footer {visibility: hidden;}
-.block-container {padding-top: 1.4rem; max-width: 100%;}
-[data-testid="stSidebar"] {border-right: 1px solid #262b3a;}
+.block-container {
+    padding-top: 3.6rem; padding-bottom: 7rem; max-width: 100%;
+}
+[data-testid="stSidebar"] {
+    background: #0f121a; border-right: 1px solid #1f2433;
+}
+
+/* top bar */
+.nx-top {
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 8px;
+    padding: 0 0 14px 0; margin-bottom: 14px;
+    border-bottom: 1px solid #1f2433;
+}
+.nx-brand {font-size: 1.05rem; font-weight: 600; letter-spacing: .02em;
+           color: #e6e8ef; display: flex; align-items: center; gap: 10px;}
+.nx-brand b {color: #8fa8ff; font-weight: 700;}
+.nx-dot {width: 12px; height: 12px; border-radius: 50%;
+         background: linear-gradient(135deg, #6c8cff, #b56cff);
+         box-shadow: 0 0 14px #6c8cff99;}
+.nx-chips {display: flex; gap: 8px; flex-wrap: wrap;}
+.nx-chip {
+    font-size: .74rem; color: #aab2c8; background: #141824;
+    border: 1px solid #232838; border-radius: 999px; padding: 4px 12px;
+}
+
+/* preview window frame */
+.nx-win {
+    display: flex; align-items: center; gap: 7px;
+    background: #141824; border: 1px solid #232838;
+    border-bottom: none; border-radius: 12px 12px 0 0;
+    padding: 9px 14px; margin-top: 6px;
+    font-size: .76rem; color: #7d859c;
+}
+.nx-win i {width: 10px; height: 10px; border-radius: 50%; display: inline-block;}
+.nx-win i:nth-child(1) {background: #ff5f57;}
+.nx-win i:nth-child(2) {background: #febc2e;}
+.nx-win i:nth-child(3) {background: #28c840;}
+.nx-win span {margin-left: 10px;}
+iframe {
+    border: 1px solid #232838 !important;
+    border-radius: 0 0 12px 12px; background: #000;
+}
+.nx-empty {
+    border: 1px dashed #2a3045; border-radius: 16px; padding: 5rem 1.5rem;
+    text-align: center; color: #7d859c; background: #0f121a;
+}
+
+/* chat */
+[data-testid="stChatMessage"] {
+    background: rgba(255,255,255,.03); border: 1px solid #232838;
+    border-radius: 14px;
+}
+[data-testid="stChatInput"] {
+    border-radius: 16px; border: 1px solid #2a3045;
+}
+
+/* controls */
 .stButton > button, .stDownloadButton > button {
-    border-radius: 10px; border: 1px solid #262b3a;
+    border-radius: 10px; border: 1px solid #2a3045; background: #141824;
+    color: #dfe3ef; font-weight: 500;
+}
+.stButton > button:hover, .stDownloadButton > button:hover {
+    border-color: #6c8cff; color: #fff;
 }
 .stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, #6c8cff, #9b6cff);
-    border: none; color: #fff;
+    background: linear-gradient(135deg, #5f7fff, #9a62ff);
+    border: none; color: #fff; font-weight: 600;
 }
-[data-testid="stChatMessage"] {
-    background: #151821; border: 1px solid #262b3a; border-radius: 14px;
+textarea {
+    background: #0f121a !important; border-radius: 12px !important;
+    font-family: 'JetBrains Mono', monospace !important; font-size: .82rem;
 }
-.nx-brand {font-size: 1.15rem; font-weight: 700; letter-spacing: .02em;}
-.nx-brand span {color: #7c9cff;}
-.nx-empty {
-    border: 1px dashed #262b3a; border-radius: 16px; padding: 4rem 1.5rem;
-    text-align: center; color: #8b92a8;
+
+/* mode pills */
+div[role="radiogroup"] {gap: 8px;}
+div[role="radiogroup"] label {
+    background: #141824; border: 1px solid #232838; border-radius: 999px;
+    padding: 4px 16px; margin: 0;
 }
+div[role="radiogroup"] label > div:first-child {display: none;}
+div[role="radiogroup"] label:has(input:checked) {
+    background: linear-gradient(135deg, #3b4a9a, #5b3a9a);
+    border-color: #6c8cff;
+}
+
+/* tabs */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 4px; border-bottom: 1px solid #1f2433;
+}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 8px 8px 0 0; padding: 8px 18px; color: #8b92a8;
+}
+.stTabs [aria-selected="true"] {color: #e6e8ef;}
 </style>
 """
 
@@ -316,10 +408,52 @@ def say(role, text):
     st.session_state["history"].append({"role": role, "text": text})
 
 
+def autosave(html):
+    sig = (len(html), hash(html))
+    if st.session_state.get("saved_sig") == sig:
+        return
+    try:
+        with open(SAVE_PATH, "w", encoding="utf-8") as f:
+            f.write(html)
+        with open(SPEC_PATH, "w", encoding="utf-8") as f:
+            f.write(st.session_state.get("spec", ""))
+        st.session_state["saved_sig"] = sig
+    except Exception:
+        pass
+
+
+def restore_last():
+    if "project_html" in st.session_state:
+        return
+    if st.session_state.get("restore_done"):
+        return
+    st.session_state["restore_done"] = True
+    try:
+        if os.path.exists(SAVE_PATH):
+            with open(SAVE_PATH, "r", encoding="utf-8") as f:
+                html = f.read()
+            if html.strip():
+                st.session_state["project_html"] = html
+                st.session_state["stage"] = "built"
+                if os.path.exists(SPEC_PATH):
+                    with open(SPEC_PATH, "r", encoding="utf-8") as f:
+                        st.session_state["spec"] = f.read()
+                say("assistant", "Restored your last project. Describe a "
+                                 "change in the box below to keep working.")
+    except Exception:
+        pass
+
+
 def reset_all():
-    for k in ("spec", "project_html", "previous_html", "build_info",
-              "loaded_sig"):
+    for k in ("spec", "project_html", "previous_html", "loaded_sig",
+              "saved_sig"):
         st.session_state.pop(k, None)
+    for p in (SAVE_PATH, SPEC_PATH):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    st.session_state["up_n"] = st.session_state.get("up_n", 0) + 1
     st.session_state["stage"] = "idea"
     st.session_state["history"] = []
 
@@ -338,6 +472,8 @@ st.markdown(CSS, unsafe_allow_html=True)
 
 st.session_state.setdefault("stage", "idea")
 st.session_state.setdefault("history", [])
+st.session_state.setdefault("mode", "Balanced")
+st.session_state.setdefault("up_n", 0)
 
 pool = get_pool(APP_VERSION)
 if not pool.keys:
@@ -349,10 +485,12 @@ if not models:
     st.error("Couldn't load the model list. Reboot the app and try again.")
     st.stop()
 
+restore_last()
+
 # ---------------- Sidebar ----------------
 with st.sidebar:
-    st.markdown('<div class="nx-brand">NEXUS <span>AI STUDIO</span></div>',
-                unsafe_allow_html=True)
+    st.markdown('<div class="nx-brand"><span class="nx-dot"></span>NEXUS '
+                '<b>AI STUDIO</b></div>', unsafe_allow_html=True)
     st.caption(f"{len(pool.keys)} keys loaded")
     words = st.number_input("Spec length in words (0 = auto)", 0, 3000, 0, 50)
     manual = st.toggle("Choose models manually")
@@ -368,7 +506,10 @@ with st.sidebar:
             index=models.index(resolve(models, ["gemini-3.8-flash"])),
         )
     st.divider()
-    up = st.file_uploader("Open a saved .html project", type=["html", "htm"])
+    up = st.file_uploader(
+        "Open a saved .html project", type=["html", "htm"],
+        key=f"up_{st.session_state['up_n']}",
+    )
     if up is not None:
         sig = (up.name, up.size)
         if st.session_state.get("loaded_sig") != sig:
@@ -394,8 +535,26 @@ with st.sidebar:
                 st.error(str(e))
     st.button("Start a new project", on_click=reset_all)
 
-# ---------------- Main layout ----------------
+# ---------------- Models for this run ----------------
+mode = st.session_state["mode"]
+spec_model = manual_spec or resolve(
+    models, ["gemini-3.5-flash-lite"], "lite"
+)
+build_model = manual_build or resolve(models, PRESETS[mode]["build"])
+build_thinking = PRESETS[mode]["thinking"]
 stage = st.session_state["stage"]
+
+# ---------------- Top bar ----------------
+st.markdown(
+    '<div class="nx-top"><div class="nx-brand"><span class="nx-dot"></span>'
+    'NEXUS <b>AI STUDIO</b></div><div class="nx-chips">'
+    f'<span class="nx-chip">{mode} mode</span>'
+    f'<span class="nx-chip">{build_model}</span>'
+    f'<span class="nx-chip">{len(pool.keys)} keys</span>'
+    '</div></div>',
+    unsafe_allow_html=True,
+)
+
 placeholder = (
     "Describe a change, or paste the red-box errors..."
     if stage == "built" else "Describe what you want to build..."
@@ -405,14 +564,9 @@ user_text = st.chat_input(placeholder)
 left, right = st.columns([2, 3], gap="large")
 
 with left:
-    mode = st.radio("Mode", list(PRESETS), index=1, horizontal=True,
-                    label_visibility="collapsed")
+    st.radio("Mode", list(PRESETS), horizontal=True,
+             label_visibility="collapsed", key="mode")
     st.caption(PRESETS[mode]["desc"])
-    spec_model = manual_spec or resolve(
-        models, ["gemini-3.5-flash-lite"], "lite"
-    )
-    build_model = manual_build or resolve(models, PRESETS[mode]["build"])
-    build_thinking = PRESETS[mode]["thinking"]
 
     if user_text and user_text.strip():
         text = user_text.strip()
@@ -489,6 +643,7 @@ with left:
 with right:
     html = st.session_state.get("project_html")
     if html:
+        autosave(html)
         if "</html>" not in html.lower():
             st.warning("The file looks cut off. Ask for a fix in the chat "
                        "box: 'finish the file, it was cut off'.")
@@ -498,6 +653,9 @@ with right:
         )
         t_prev, t_code, t_spec = st.tabs(["Preview", "Code", "Spec"])
         with t_prev:
+            st.markdown('<div class="nx-win"><i></i><i></i><i></i>'
+                        '<span>live preview</span></div>',
+                        unsafe_allow_html=True)
             components.html(inject_errors(html), height=720, scrolling=False)
         with t_code:
             st.code(html, language="html", wrap_lines=True)
