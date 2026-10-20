@@ -1,6 +1,8 @@
 import os
 import re
+import hmac
 import time
+import random
 import tempfile
 import threading
 import streamlit as st
@@ -8,7 +10,7 @@ import streamlit.components.v1 as components
 from google import genai
 from google.genai import errors, types
 
-APP_VERSION = "v7"
+APP_VERSION = "v8"
 COOLDOWN_SECONDS = 60
 SKIP_WORDS = ("image", "tts", "embed", "live", "audio", "veo",
               "imagen", "robotics", "computer", "aqa")
@@ -16,16 +18,21 @@ SAVE_PATH = os.path.join(tempfile.gettempdir(), "nexus_last_project.html")
 SPEC_PATH = os.path.join(tempfile.gettempdir(), "nexus_last_spec.txt")
 
 PRESETS = {
-    "Fast": {"build": ["gemini-3.6-flash", "gemini-3.5-flash"],
+    "Fast": {"chain": ["gemini-3.6-flash", "gemini-3.5-flash",
+                       "gemini-3.5-flash-lite"],
              "thinking": "low",
              "desc": "Quick builds, light reasoning."},
-    "Balanced": {"build": ["gemini-3.8-flash", "gemini-3.6-flash"],
+    "Balanced": {"chain": ["gemini-3.8-flash", "gemini-3.6-flash",
+                           "gemini-3.5-flash", "gemini-3.5-flash-lite"],
                  "thinking": "low",
                  "desc": "Best quality for the time. Recommended."},
-    "Deep": {"build": ["gemini-3.8-flash", "gemini-3.6-flash"],
+    "Deep": {"chain": ["gemini-3.8-flash", "gemini-3.6-flash",
+                       "gemini-3.5-flash"],
              "thinking": "high",
              "desc": "Slowest, most careful."},
 }
+SPEC_CHAIN = ["gemini-3.5-flash-lite", "gemini-3.5-flash",
+              "gemini-3.6-flash"]
 
 FACTORY_SYSTEM = """You are a senior software architect who writes build \
 specifications for an AI coding agent. Turn the user's short idea into ONE \
@@ -144,8 +151,6 @@ footer {visibility: hidden;}
 [data-testid="stSidebar"] {
     background: #0f121a; border-right: 1px solid #1f2433;
 }
-
-/* top bar */
 .nx-top {
     display: flex; align-items: center; justify-content: space-between;
     flex-wrap: wrap; gap: 8px;
@@ -163,8 +168,6 @@ footer {visibility: hidden;}
     font-size: .74rem; color: #aab2c8; background: #141824;
     border: 1px solid #232838; border-radius: 999px; padding: 4px 12px;
 }
-
-/* preview window frame */
 .nx-win {
     display: flex; align-items: center; gap: 7px;
     background: #141824; border: 1px solid #232838;
@@ -185,8 +188,6 @@ iframe {
     border: 1px dashed #2a3045; border-radius: 16px; padding: 5rem 1.5rem;
     text-align: center; color: #7d859c; background: #0f121a;
 }
-
-/* chat */
 [data-testid="stChatMessage"] {
     background: rgba(255,255,255,.03); border: 1px solid #232838;
     border-radius: 14px;
@@ -194,8 +195,6 @@ iframe {
 [data-testid="stChatInput"] {
     border-radius: 16px; border: 1px solid #2a3045;
 }
-
-/* controls */
 .stButton > button, .stDownloadButton > button {
     border-radius: 10px; border: 1px solid #2a3045; background: #141824;
     color: #dfe3ef; font-weight: 500;
@@ -211,8 +210,6 @@ textarea {
     background: #0f121a !important; border-radius: 12px !important;
     font-family: 'JetBrains Mono', monospace !important; font-size: .82rem;
 }
-
-/* mode pills */
 div[role="radiogroup"] {gap: 8px;}
 div[role="radiogroup"] label {
     background: #141824; border: 1px solid #232838; border-radius: 999px;
@@ -223,8 +220,6 @@ div[role="radiogroup"] label:has(input:checked) {
     background: linear-gradient(135deg, #3b4a9a, #5b3a9a);
     border-color: #6c8cff;
 }
-
-/* tabs */
 .stTabs [data-baseweb="tab-list"] {
     gap: 4px; border-bottom: 1px solid #1f2433;
 }
@@ -253,31 +248,28 @@ def inject_errors(html):
 
 
 class KeyPool:
-    """Rotates through API keys. A key that hits a rate limit (429)
-    is benched for 60 seconds while other keys keep working."""
+    """Rotates API keys, retries overloaded models with backoff, and falls
+    back through a list of models so one busy model never stops a build."""
 
     def __init__(self, keys):
         self.keys = list(keys)
         self.next_index = 0
-        self.cooldown_until = {i: 0.0 for i in range(len(self.keys))}
+        self.cool = {}          # (key_index, model) -> unix time
+        self.model_down = {}    # model -> unix time
         self.lock = threading.Lock()
         self.no_thinking = set()
 
-    def _pick(self):
+    def _pick(self, model):
         with self.lock:
             now = time.time()
             n = len(self.keys)
             for offset in range(n):
                 i = (self.next_index + offset) % n
-                if self.cooldown_until[i] <= now:
+                if self.cool.get((i, model), 0) <= now:
                     self.next_index = (i + 1) % n
                     return i, 0.0
-            soonest = min(self.cooldown_until.values())
+            soonest = min(self.cool.get((i, model), 0) for i in range(n))
             return None, max(0.0, soonest - now)
-
-    def _bench(self, i, seconds):
-        with self.lock:
-            self.cooldown_until[i] = time.time() + seconds
 
     def _config(self, model, system, thinking, max_tokens):
         kwargs = {}
@@ -308,54 +300,100 @@ class KeyPool:
         except Exception:
             return []
 
-    def generate(self, prompt, model, system=None, thinking="low",
-                 max_tokens=None, max_attempts=30):
+    def generate(self, prompt, models, system=None, thinking="low",
+                 max_tokens=None, notify=None, patience=3):
+        """Try each model in order. Returns (text, model_used, key_no, log)."""
+        if isinstance(models, str):
+            models = [models]
+        tell = notify or (lambda m: None)
         log = []
-        for _ in range(max_attempts):
-            i, wait = self._pick()
-            if i is None:
-                time.sleep(min(wait, 5) + 0.1)
+        last = len(models) - 1
+        for idx, model in enumerate(models):
+            if idx != last and self.model_down.get(model, 0) > time.time():
+                log.append(f"{model}: skipped (recently overloaded)")
                 continue
-            config = self._config(model, system, thinking, max_tokens)
-            t0 = time.time()
-            try:
-                client = genai.Client(
-                    api_key=self.keys[i],
-                    http_options=types.HttpOptions(timeout=300_000),
-                )
-                response = client.models.generate_content(
-                    model=model, contents=prompt, config=config
-                )
-                log.append(f"Key {i+1}: OK in {time.time()-t0:.1f}s")
-                return (response.text or ""), i + 1, log
-            except errors.APIError as e:
-                log.append(
-                    f"Key {i+1}: error {e.code} after {time.time()-t0:.1f}s"
-                )
-                if (e.code == 400 and thinking != "off"
-                        and model not in self.no_thinking):
-                    self.no_thinking.add(model)
-                    log.append("Thinking setting rejected, retrying without")
-                elif e.code == 429:
-                    self._bench(i, COOLDOWN_SECONDS)
-                elif e.code in (401, 403):
-                    self._bench(i, 3600)
-                elif e.code in (500, 502, 503, 504):
-                    time.sleep(1)
-                else:
-                    raise RuntimeError("; ".join(log) + f" | {e}")
-            except Exception as e:
-                log.append(f"Key {i+1}: {type(e).__name__} after "
-                           f"{time.time()-t0:.1f}s")
-                time.sleep(1)
-        raise RuntimeError("All keys failed. " + "; ".join(log))
+            overloaded = limited = other = 0
+            deadline = time.time() + 240
+            while time.time() < deadline:
+                i, wait = self._pick(model)
+                if i is None:
+                    if idx != last:
+                        break
+                    tell(f"{model}: waiting {int(wait)}s for rate limits...")
+                    time.sleep(min(wait, 5) + 0.1)
+                    continue
+                config = self._config(model, system, thinking, max_tokens)
+                t0 = time.time()
+                try:
+                    client = genai.Client(
+                        api_key=self.keys[i],
+                        http_options=types.HttpOptions(timeout=300_000),
+                    )
+                    response = client.models.generate_content(
+                        model=model, contents=prompt, config=config
+                    )
+                    log.append(f"{model} key {i+1}: OK in "
+                               f"{time.time()-t0:.1f}s")
+                    return (response.text or ""), model, i + 1, log
+                except errors.APIError as e:
+                    code = e.code
+                    log.append(f"{model} key {i+1}: error {code}")
+                    if (code == 400 and thinking != "off"
+                            and model not in self.no_thinking):
+                        self.no_thinking.add(model)
+                        continue
+                    if code in (500, 502, 503, 504):
+                        overloaded += 1
+                        if overloaded >= patience:
+                            self.model_down[model] = time.time() + 120
+                            tell(f"{model} is overloaded. Switching to the "
+                                 "next model...")
+                            break
+                        delay = 4 * 2 ** (overloaded - 1) + random.random()
+                        tell(f"{model} is busy (error {code}). Retrying in "
+                             f"{delay:.0f}s...")
+                        time.sleep(delay)
+                    elif code == 429:
+                        limited += 1
+                        self.cool[(i, model)] = time.time() + COOLDOWN_SECONDS
+                        if limited >= len(self.keys):
+                            self.model_down[model] = time.time() + 300
+                            tell(f"{model} hit its rate limit on every key. "
+                                 "Switching...")
+                            break
+                    elif code in (401, 403):
+                        self.cool[(i, model)] = time.time() + 3600
+                    elif code == 404:
+                        log.append(f"{model}: not available")
+                        break
+                    else:
+                        raise RuntimeError(f"{model}: error {code}: {e}")
+                except Exception as e:
+                    other += 1
+                    log.append(f"{model} key {i+1}: {type(e).__name__}")
+                    if other >= 4:
+                        break
+                    time.sleep(2)
+        tail = "; ".join(log[-4:])
+        raise RuntimeError(
+            "Every model is busy or limited right now. Wait a couple of "
+            f"minutes and try again. (Last: {tail})"
+        )
+
+    def reset(self):
+        self.cool.clear()
+        self.model_down.clear()
 
     def status(self):
         now = time.time()
-        return [
-            max(0, int(self.cooldown_until[i] - now))
-            for i in range(len(self.keys))
-        ]
+        out = []
+        for (i, m), t in self.cool.items():
+            if t > now:
+                out.append(f"{m} / key {i+1}: cooling {int(t-now)}s")
+        for m, t in self.model_down.items():
+            if t > now:
+                out.append(f"{m}: paused {int(t-now)}s")
+        return out or ["nothing paused"]
 
 
 @st.cache_resource
@@ -383,14 +421,21 @@ def resolve(models, wanted, keyword=None):
     return models[0]
 
 
-def make_spec(pool, model, idea, words):
+def build_chain(models, wanted, first=None):
+    chain = [m for m in wanted if m in models]
+    if first:
+        chain = [first] + [m for m in chain if m != first]
+    return chain or [models[0]]
+
+
+def make_spec(pool, chain, idea, words, notify=None):
     if words:
         length = f"Write the prompt at about {words} words."
     else:
         length = "Choose the length that fits the project's complexity."
-    text, _, log = pool.generate(
-        f"Idea: {idea}\n\n{length}", model=model,
-        system=FACTORY_SYSTEM, thinking="low",
+    text, _, _, _ = pool.generate(
+        f"Idea: {idea}\n\n{length}", chain,
+        system=FACTORY_SYSTEM, thinking="low", notify=notify,
     )
     count = len(text.split())
     if words and abs(count - words) / words > 0.15:
@@ -399,9 +444,9 @@ def make_spec(pool, model, idea, words):
             f"(it is currently {count}). Keep every essential requirement. "
             f"Output only the prompt.\n\n{text}"
         )
-        text, _, log2 = pool.generate(fix, model=model, thinking="low")
-        log += ["Length adjustment pass"] + log2
-    return text.strip(), log
+        text, _, _, _ = pool.generate(fix, chain, thinking="low",
+                                      notify=notify)
+    return text.strip()
 
 
 def say(role, text):
@@ -466,9 +511,35 @@ def undo_refine():
         say("assistant", "Undid the last refine.")
 
 
+def get_password():
+    try:
+        return str(st.secrets.get("APP_PASSWORD", "") or "")
+    except Exception:
+        return ""
+
+
+def password_ok():
+    pw = get_password()
+    if not pw or st.session_state.get("authed"):
+        return True
+    st.markdown('<div class="nx-brand"><span class="nx-dot"></span>NEXUS '
+                '<b>AI STUDIO</b></div>', unsafe_allow_html=True)
+    entered = st.text_input("Password", type="password")
+    if entered:
+        if hmac.compare_digest(entered.encode(), pw.encode()):
+            st.session_state["authed"] = True
+            st.rerun()
+        else:
+            st.error("Wrong password.")
+    return False
+
+
 st.set_page_config(page_title="NEXUS AI STUDIO", layout="wide",
                    initial_sidebar_state="collapsed")
 st.markdown(CSS, unsafe_allow_html=True)
+
+if not password_ok():
+    st.stop()
 
 st.session_state.setdefault("stage", "idea")
 st.session_state.setdefault("history", [])
@@ -491,9 +562,10 @@ restore_last()
 with st.sidebar:
     st.markdown('<div class="nx-brand"><span class="nx-dot"></span>NEXUS '
                 '<b>AI STUDIO</b></div>', unsafe_allow_html=True)
-    st.caption(f"{len(pool.keys)} keys loaded")
+    st.caption(f"{len(pool.keys)} keys loaded | password gate: "
+               f"{'on' if get_password() else 'off'}")
     words = st.number_input("Spec length in words (0 = auto)", 0, 3000, 0, 50)
-    manual = st.toggle("Choose models manually")
+    manual = st.toggle("Choose first-choice models manually")
     manual_build = manual_spec = None
     if manual:
         manual_spec = st.selectbox(
@@ -523,13 +595,19 @@ with st.sidebar:
             st.rerun()
     st.divider()
     with st.expander("Diagnostics"):
-        st.write("Key cooldowns (seconds):", pool.status())
-        if st.button("Speed test"):
+        st.write(pool.status())
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Reset cooldowns"):
+                pool.reset()
+                st.rerun()
+        with c2:
+            speed = st.button("Speed test")
+        if speed:
             t0 = time.time()
             try:
-                m = manual_spec or resolve(models, ["gemini-3.5-flash-lite"],
-                                           "lite")
-                pool.generate("Say hi.", model=m, thinking="off")
+                m = resolve(models, ["gemini-3.5-flash-lite"], "lite")
+                pool.generate("Say hi.", [m], thinking="off")
                 st.write(f"{m}: {time.time()-t0:.1f}s")
             except Exception as e:
                 st.error(str(e))
@@ -537,19 +615,35 @@ with st.sidebar:
 
 # ---------------- Models for this run ----------------
 mode = st.session_state["mode"]
-spec_model = manual_spec or resolve(
-    models, ["gemini-3.5-flash-lite"], "lite"
-)
-build_model = manual_build or resolve(models, PRESETS[mode]["build"])
+spec_chain = build_chain(models, SPEC_CHAIN, manual_spec)
+build_chain_list = build_chain(models, PRESETS[mode]["chain"], manual_build)
 build_thinking = PRESETS[mode]["thinking"]
 stage = st.session_state["stage"]
+
+
+def run_ai(prompt, chain, system, thinking, max_tokens, label):
+    ph = st.empty()
+    ph.caption(f"{label} with {chain[0]}...")
+    start = time.time()
+    try:
+        text, used, _, _ = pool.generate(
+            prompt, chain, system=system, thinking=thinking,
+            max_tokens=max_tokens, notify=lambda m: ph.caption(m),
+        )
+    finally:
+        ph.empty()
+    note = ""
+    if used != chain[0]:
+        note = f" ({chain[0]} was busy, so a fallback model was used)"
+    return text, used, time.time() - start, note
+
 
 # ---------------- Top bar ----------------
 st.markdown(
     '<div class="nx-top"><div class="nx-brand"><span class="nx-dot"></span>'
     'NEXUS <b>AI STUDIO</b></div><div class="nx-chips">'
     f'<span class="nx-chip">{mode} mode</span>'
-    f'<span class="nx-chip">{build_model}</span>'
+    f'<span class="nx-chip">{build_chain_list[0]}</span>'
     f'<span class="nx-chip">{len(pool.keys)} keys</span>'
     '</div></div>',
     unsafe_allow_html=True,
@@ -572,35 +666,35 @@ with left:
         text = user_text.strip()
         if stage in ("idea", "spec"):
             say("user", text)
-            with st.spinner("Writing your build spec..."):
-                try:
-                    spec, _ = make_spec(pool, spec_model, text, int(words))
-                    st.session_state["spec"] = spec
-                    st.session_state["stage"] = "spec"
-                    say("assistant",
-                        f"Here's the build spec ({len(spec.split())} words). "
-                        "Edit it if you like, then tap **Build project**.")
-                except Exception as e:
-                    say("assistant", f"Error: {e}")
+            ph = st.empty()
+            try:
+                ph.caption(f"Writing your build spec with {spec_chain[0]}...")
+                spec = make_spec(pool, spec_chain, text, int(words),
+                                 notify=lambda m: ph.caption(m))
+                st.session_state["spec"] = spec
+                st.session_state["stage"] = "spec"
+                say("assistant",
+                    f"Here's the build spec ({len(spec.split())} words). "
+                    "Edit it if you like, then tap **Build project**.")
+            except Exception as e:
+                say("assistant", f"Error: {e}")
             st.rerun()
         else:
             say("user", text)
             html = st.session_state.get("project_html", "")
-            start = time.time()
-            with st.spinner(f"Refining with {build_model}..."):
-                try:
-                    out, _, _ = pool.generate(
-                        f"REQUEST:\n{text}\n\nCURRENT CODE:\n{html}",
-                        model=build_model, system=REFINE_SYSTEM,
-                        thinking=build_thinking, max_tokens=32000,
-                    )
-                    st.session_state["previous_html"] = html
-                    st.session_state["project_html"] = extract_html(out)
-                    say("assistant",
-                        f"Refined in {time.time()-start:.0f}s. Playtest it, "
-                        "or tap **Undo last refine** if it got worse.")
-                except Exception as e:
-                    say("assistant", f"Error: {e}")
+            try:
+                out, used, secs, note = run_ai(
+                    f"REQUEST:\n{text}\n\nCURRENT CODE:\n{html}",
+                    build_chain_list, REFINE_SYSTEM, build_thinking,
+                    32000, "Refining",
+                )
+                st.session_state["previous_html"] = html
+                st.session_state["project_html"] = extract_html(out)
+                say("assistant",
+                    f"Refined in {secs:.0f}s with {used}{note}. Playtest it, "
+                    "or tap **Undo last refine** if it got worse.")
+            except Exception as e:
+                say("assistant", f"Error: {e}")
             st.rerun()
 
     if not st.session_state["history"]:
@@ -618,23 +712,19 @@ with left:
                     wrap_lines=True)
         if st.button("Build project", type="primary",
                      use_container_width=True):
-            start = time.time()
-            with st.spinner(f"Building with {build_model}..."):
-                try:
-                    out, _, _ = pool.generate(
-                        st.session_state["spec"], model=build_model,
-                        system=BUILDER_SYSTEM, thinking=build_thinking,
-                        max_tokens=32000,
-                    )
-                    st.session_state["project_html"] = extract_html(out)
-                    st.session_state["stage"] = "built"
-                    say("assistant",
-                        f"Built in {time.time()-start:.0f}s with "
-                        f"{build_model}. Playtest it on the right. If a red "
-                        "box appears, press and hold to copy it, then paste "
-                        "it in the box below.")
-                except Exception as e:
-                    say("assistant", f"Error: {e}")
+            try:
+                out, used, secs, note = run_ai(
+                    st.session_state["spec"], build_chain_list,
+                    BUILDER_SYSTEM, build_thinking, 32000, "Building",
+                )
+                st.session_state["project_html"] = extract_html(out)
+                st.session_state["stage"] = "built"
+                say("assistant",
+                    f"Built in {secs:.0f}s with {used}{note}. Playtest it on "
+                    "the right. If a red box appears, press and hold to "
+                    "copy it, then paste it in the box below.")
+            except Exception as e:
+                say("assistant", f"Error: {e}")
             st.rerun()
 
     if stage == "built" and st.session_state.get("previous_html"):
