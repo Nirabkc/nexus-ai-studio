@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 from google import genai
 from google.genai import errors, types
 
-APP_VERSION = "v11"
+APP_VERSION = "v12"
 COOLDOWN_SECONDS = 60
 SKIP_WORDS = ("image", "tts", "embed", "live", "audio", "veo",
               "imagen", "robotics", "computer", "aqa")
@@ -100,7 +100,6 @@ ERROR_SNIPPET = r"""<script>
 })();
 </script>"""
 
-# --- Antigravity Precision Obsidian Theme ---
 CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -109,7 +108,6 @@ html, body, [class*="css"] {
     font-family: 'Plus Jakarta Sans', -apple-system, sans-serif !important;
 }
 
-/* Antigravity Matte Deep Background */
 .stApp {
     background-color: #08080a !important;
     background-image: 
@@ -132,7 +130,6 @@ footer {visibility: hidden !important;}
     border-right: 1px solid #1a1b24 !important;
 }
 
-/* Antigravity Brand Top Bar */
 .ag-header {
     display: flex;
     align-items: center;
@@ -203,7 +200,6 @@ footer {visibility: hidden !important;}
     padding: 3px 9px;
 }
 
-/* Antigravity Active Agent Banner */
 .ag-worker-banner {
     display: flex;
     align-items: center;
@@ -239,7 +235,6 @@ footer {visibility: hidden !important;}
     50% { transform: scale(1.3); opacity: 1; }
 }
 
-/* Antigravity Window Chassis */
 .ag-chassis {
     background: #0e0f14;
     border: 1px solid #1a1b24;
@@ -280,7 +275,6 @@ iframe {
     background: #000000 !important;
 }
 
-/* Chat & Inputs */
 [data-testid="stChatMessage"] {
     background: #0d0e14 !important;
     border: 1px solid #181924 !important;
@@ -293,7 +287,6 @@ iframe {
     border-radius: 8px !important;
 }
 
-/* Antigravity Buttons */
 .stButton > button, .stDownloadButton > button {
     background: #12131b !important;
     border: 1px solid #232534 !important;
@@ -317,7 +310,6 @@ iframe {
     box-shadow: 0 0 14px rgba(99, 102, 241, 0.3) !important;
 }
 
-/* Radio Pill Mode Selector */
 div[role="radiogroup"] {
     gap: 6px !important;
 }
@@ -336,7 +328,6 @@ div[role="radiogroup"] label:has(input:checked) {
     color: #c7d2fe !important;
 }
 
-/* Tabs */
 .stTabs [data-baseweb="tab-list"] {
     gap: 4px !important;
     border-bottom: 1px solid #181924 !important;
@@ -547,7 +538,6 @@ class KeyPool:
         return out or ["All models & keys nominal"]
 
 
-# ---------------- Background Agent Worker ----------------
 class BackgroundWorker:
     def __init__(self):
         self.thread = None
@@ -816,9 +806,15 @@ st.markdown(CSS, unsafe_allow_html=True)
 if not password_ok():
     st.stop()
 
+# --- Auto-migration for legacy session state ---
+if "mode" not in st.session_state or st.session_state["mode"] not in PRESETS:
+    if st.session_state.get("mode") == "Fast":
+        st.session_state["mode"] = "Turbo"
+    else:
+        st.session_state["mode"] = "High"
+
 st.session_state.setdefault("stage", "idea")
 st.session_state.setdefault("history", [])
-st.session_state.setdefault("mode", "High")
 st.session_state.setdefault("up_n", 0)
 
 pool = get_pool(APP_VERSION)
@@ -920,7 +916,11 @@ with st.sidebar:
     st.button("Clear Workspace", on_click=reset_all)
 
 # ---------------- Active Models ----------------
-mode = st.session_state["mode"]
+mode = st.session_state.get("mode", "High")
+if mode not in PRESETS:
+    mode = "High"
+    st.session_state["mode"] = "High"
+
 spec_chain = build_chain(models, SPEC_CHAIN, manual_spec)
 build_chain_list = build_chain(models, PRESETS[mode]["chain"], manual_build)
 build_thinking = PRESETS[mode]["thinking"]
@@ -1003,7 +1003,7 @@ left, right = st.columns([2, 3], gap="large")
 with left:
     st.radio("Effort", list(PRESETS), horizontal=True,
              label_visibility="collapsed", key="mode", disabled=is_busy)
-    st.caption(PRESETS[mode]["desc"])
+    st.caption(PRESETS[st.session_state["mode"]]["desc"])
 
     if user_text and user_text.strip():
         text = user_text.strip()
