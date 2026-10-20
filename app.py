@@ -6,10 +6,22 @@ import streamlit.components.v1 as components
 from google import genai
 from google.genai import errors, types
 
-APP_VERSION = "v5"
+APP_VERSION = "v6"
 COOLDOWN_SECONDS = 60
 SKIP_WORDS = ("image", "tts", "embed", "live", "audio", "veo",
               "imagen", "robotics", "computer", "aqa")
+
+PRESETS = {
+    "Fast": {"build": ["gemini-3.6-flash", "gemini-3.5-flash"],
+             "thinking": "low",
+             "desc": "Quick builds, light reasoning."},
+    "Balanced": {"build": ["gemini-3.8-flash", "gemini-3.6-flash"],
+                 "thinking": "low",
+                 "desc": "Best quality for the time. Recommended."},
+    "Deep": {"build": ["gemini-3.8-flash", "gemini-3.6-flash"],
+             "thinking": "high",
+             "desc": "Slowest, most careful."},
+}
 
 FACTORY_SYSTEM = """You are a senior software architect who writes build \
 specifications for an AI coding agent. Turn the user's short idea into ONE \
@@ -63,9 +75,17 @@ console.error so they can be diagnosed."""
 
 REFINE_SYSTEM = """You are an expert front-end and WebGL engineer fixing an \
 existing single-file HTML project. Apply the requested fixes or changes to \
-the CURRENT code. Keep everything that already works unchanged. Output the \
-COMPLETE updated file inside a single ```html code block, with no \
-explanation and no omitted sections."""
+the CURRENT code. Keep everything that already works unchanged.
+
+When the request describes wrong behavior (for example a reversed \
+direction), trace the full data flow from input to what is rendered on \
+screen: input values and signs, index or lane mapping, world coordinates, \
+camera orientation and any mirrored axes. Find the single root cause and \
+fix it there. Do not stack compensating patches in several places, and \
+check for accidental double inversion.
+
+Output the COMPLETE updated file inside a single ```html code block, with \
+no explanation and no omitted sections."""
 
 ERROR_SNIPPET = r"""<script>
 (function(){
@@ -98,6 +118,30 @@ ERROR_SNIPPET = r"""<script>
   };
 })();
 </script>"""
+
+CSS = """
+<style>
+footer {visibility: hidden;}
+.block-container {padding-top: 1.4rem; max-width: 100%;}
+[data-testid="stSidebar"] {border-right: 1px solid #262b3a;}
+.stButton > button, .stDownloadButton > button {
+    border-radius: 10px; border: 1px solid #262b3a;
+}
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #6c8cff, #9b6cff);
+    border: none; color: #fff;
+}
+[data-testid="stChatMessage"] {
+    background: #151821; border: 1px solid #262b3a; border-radius: 14px;
+}
+.nx-brand {font-size: 1.15rem; font-weight: 700; letter-spacing: .02em;}
+.nx-brand span {color: #7c9cff;}
+.nx-empty {
+    border: 1px dashed #262b3a; border-radius: 16px; padding: 4rem 1.5rem;
+    text-align: center; color: #8b92a8;
+}
+</style>
+"""
 
 
 def extract_html(text):
@@ -236,25 +280,25 @@ def get_models(version):
     return get_pool(version).list_models()
 
 
-def pick_default(models, preferred, keyword=None):
-    for p in preferred:
-        if p in models:
-            return models.index(p)
+def resolve(models, wanted, keyword=None):
+    for w in wanted:
+        if w in models:
+            return w
     if keyword:
-        for i, m in enumerate(models):
+        for m in models:
             if keyword in m:
-                return i
-    return 0
+                return m
+    return models[0]
 
 
-def make_spec(pool, model, thinking, idea, words):
+def make_spec(pool, model, idea, words):
     if words:
         length = f"Write the prompt at about {words} words."
     else:
         length = "Choose the length that fits the project's complexity."
     text, _, log = pool.generate(
         f"Idea: {idea}\n\n{length}", model=model,
-        system=FACTORY_SYSTEM, thinking=thinking,
+        system=FACTORY_SYSTEM, thinking="low",
     )
     count = len(text.split())
     if words and abs(count - words) / words > 0.15:
@@ -263,17 +307,37 @@ def make_spec(pool, model, thinking, idea, words):
             f"(it is currently {count}). Keep every essential requirement. "
             f"Output only the prompt.\n\n{text}"
         )
-        text, _, log2 = pool.generate(fix, model=model, thinking=thinking)
+        text, _, log2 = pool.generate(fix, model=model, thinking="low")
         log += ["Length adjustment pass"] + log2
     return text.strip(), log
 
 
-def load_spec_into_builder():
-    st.session_state["builder_spec"] = st.session_state.get("spec", "")
+def say(role, text):
+    st.session_state["history"].append({"role": role, "text": text})
 
 
-st.set_page_config(page_title="NEXUS AI STUDIO", layout="wide")
-st.title("NEXUS AI STUDIO")
+def reset_all():
+    for k in ("spec", "project_html", "previous_html", "build_info",
+              "loaded_sig"):
+        st.session_state.pop(k, None)
+    st.session_state["stage"] = "idea"
+    st.session_state["history"] = []
+
+
+def undo_refine():
+    if st.session_state.get("previous_html"):
+        st.session_state["project_html"] = st.session_state.pop(
+            "previous_html"
+        )
+        say("assistant", "Undid the last refine.")
+
+
+st.set_page_config(page_title="NEXUS AI STUDIO", layout="wide",
+                   initial_sidebar_state="collapsed")
+st.markdown(CSS, unsafe_allow_html=True)
+
+st.session_state.setdefault("stage", "idea")
+st.session_state.setdefault("history", [])
 
 pool = get_pool(APP_VERSION)
 if not pool.keys:
@@ -285,154 +349,164 @@ if not models:
     st.error("Couldn't load the model list. Reboot the app and try again.")
     st.stop()
 
+# ---------------- Sidebar ----------------
 with st.sidebar:
-    st.header("Settings")
+    st.markdown('<div class="nx-brand">NEXUS <span>AI STUDIO</span></div>',
+                unsafe_allow_html=True)
     st.caption(f"{len(pool.keys)} keys loaded")
-    fast_model = st.selectbox(
-        "Fast model (Prompt Factory)", models,
-        index=pick_default(models, ["gemini-3.5-flash-lite"], "lite"),
-    )
-    build_model = st.selectbox(
-        "Builder model", models,
-        index=pick_default(
-            models, ["gemini-3.6-flash", "gemini-3.5-flash"]
-        ),
-    )
-    thinking = st.selectbox("Thinking depth", ["off", "low", "medium", "high"],
-                            index=1)
+    words = st.number_input("Spec length in words (0 = auto)", 0, 3000, 0, 50)
+    manual = st.toggle("Choose models manually")
+    manual_build = manual_spec = None
+    if manual:
+        manual_spec = st.selectbox(
+            "Spec model", models,
+            index=models.index(resolve(models, ["gemini-3.5-flash-lite"],
+                                       "lite")),
+        )
+        manual_build = st.selectbox(
+            "Builder model", models,
+            index=models.index(resolve(models, ["gemini-3.8-flash"])),
+        )
+    st.divider()
+    up = st.file_uploader("Open a saved .html project", type=["html", "htm"])
+    if up is not None:
+        sig = (up.name, up.size)
+        if st.session_state.get("loaded_sig") != sig:
+            st.session_state["project_html"] = up.getvalue().decode(
+                "utf-8", errors="ignore"
+            )
+            st.session_state["loaded_sig"] = sig
+            st.session_state["stage"] = "built"
+            say("assistant", f"Loaded **{up.name}**. Describe a change, or "
+                             "paste errors, in the box below.")
+            st.rerun()
+    st.divider()
+    with st.expander("Diagnostics"):
+        st.write("Key cooldowns (seconds):", pool.status())
+        if st.button("Speed test"):
+            t0 = time.time()
+            try:
+                m = manual_spec or resolve(models, ["gemini-3.5-flash-lite"],
+                                           "lite")
+                pool.generate("Say hi.", model=m, thinking="off")
+                st.write(f"{m}: {time.time()-t0:.1f}s")
+            except Exception as e:
+                st.error(str(e))
+    st.button("Start a new project", on_click=reset_all)
 
-tab1, tab2, tab3 = st.tabs(
-    ["Prompt Factory", "Master Builder", "Model test"]
+# ---------------- Main layout ----------------
+stage = st.session_state["stage"]
+placeholder = (
+    "Describe a change, or paste the red-box errors..."
+    if stage == "built" else "Describe what you want to build..."
 )
+user_text = st.chat_input(placeholder)
 
-with tab1:
-    st.subheader("Mini Gemini: Prompt Factory")
-    idea = st.text_area(
-        "Your idea (one casual sentence is fine)",
-        placeholder="make a 3D Minecraft clone with realistic water",
+left, right = st.columns([2, 3], gap="large")
+
+with left:
+    mode = st.radio("Mode", list(PRESETS), index=1, horizontal=True,
+                    label_visibility="collapsed")
+    st.caption(PRESETS[mode]["desc"])
+    spec_model = manual_spec or resolve(
+        models, ["gemini-3.5-flash-lite"], "lite"
     )
-    words = st.number_input(
-        "Target word count (0 = let the model decide)",
-        min_value=0, max_value=3000, value=0, step=50,
-    )
-    if st.button("Generate prompt", type="primary"):
-        if not idea.strip():
-            st.warning("Type an idea first.")
-        else:
-            start = time.time()
-            with st.spinner("Writing your spec..."):
+    build_model = manual_build or resolve(models, PRESETS[mode]["build"])
+    build_thinking = PRESETS[mode]["thinking"]
+
+    if user_text and user_text.strip():
+        text = user_text.strip()
+        if stage in ("idea", "spec"):
+            say("user", text)
+            with st.spinner("Writing your build spec..."):
                 try:
-                    spec, log = make_spec(
-                        pool, fast_model, thinking, idea.strip(), int(words)
-                    )
+                    spec, _ = make_spec(pool, spec_model, text, int(words))
                     st.session_state["spec"] = spec
-                    st.session_state["spec_info"] = (
-                        f"{len(spec.split())} words | {fast_model} | "
-                        f"{time.time()-start:.1f}s"
-                    )
-                    st.session_state["spec_log"] = log
+                    st.session_state["stage"] = "spec"
+                    say("assistant",
+                        f"Here's the build spec ({len(spec.split())} words). "
+                        "Edit it if you like, then tap **Build project**.")
                 except Exception as e:
-                    st.error(f"Error: {e}")
-
-    if st.session_state.get("spec"):
-        st.caption(st.session_state["spec_info"])
-        st.caption("Tap the copy icon at the top right of the box:")
-        st.code(st.session_state["spec"], language="markdown",
-                wrap_lines=True)
-        with st.expander("Attempt log"):
-            for line in st.session_state.get("spec_log", []):
-                st.write(line)
-
-with tab2:
-    st.subheader("Master Builder")
-    st.caption("Keep this tab open and the screen on until the build "
-               "finishes (background mode comes in the next step).")
-    st.button("Use Prompt Factory result", on_click=load_spec_into_builder)
-    st.text_area("Specification", key="builder_spec", height=220,
-                 placeholder="Paste a spec here, or tap the button above.")
-
-    if st.button("Build project", type="primary"):
-        spec_text = st.session_state.get("builder_spec", "").strip()
-        if not spec_text:
-            st.warning("Add a specification first.")
+                    say("assistant", f"Error: {e}")
+            st.rerun()
         else:
+            say("user", text)
+            html = st.session_state.get("project_html", "")
             start = time.time()
-            with st.spinner("Building... this can take 1-3 minutes."):
+            with st.spinner(f"Refining with {build_model}..."):
                 try:
-                    text, key_no, log = pool.generate(
-                        spec_text, model=build_model,
-                        system=BUILDER_SYSTEM, thinking=thinking,
+                    out, _, _ = pool.generate(
+                        f"REQUEST:\n{text}\n\nCURRENT CODE:\n{html}",
+                        model=build_model, system=REFINE_SYSTEM,
+                        thinking=build_thinking, max_tokens=32000,
+                    )
+                    st.session_state["previous_html"] = html
+                    st.session_state["project_html"] = extract_html(out)
+                    say("assistant",
+                        f"Refined in {time.time()-start:.0f}s. Playtest it, "
+                        "or tap **Undo last refine** if it got worse.")
+                except Exception as e:
+                    say("assistant", f"Error: {e}")
+            st.rerun()
+
+    if not st.session_state["history"]:
+        st.info("Type an idea below to begin, for example: "
+                "*a 3D neon cube dodging game*.")
+
+    for msg in st.session_state["history"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["text"])
+
+    if stage == "spec":
+        st.text_area("Build spec (editable)", key="spec", height=280)
+        with st.expander("Copy spec"):
+            st.code(st.session_state.get("spec", ""), language="markdown",
+                    wrap_lines=True)
+        if st.button("Build project", type="primary",
+                     use_container_width=True):
+            start = time.time()
+            with st.spinner(f"Building with {build_model}..."):
+                try:
+                    out, _, _ = pool.generate(
+                        st.session_state["spec"], model=build_model,
+                        system=BUILDER_SYSTEM, thinking=build_thinking,
                         max_tokens=32000,
                     )
-                    st.session_state["project_html"] = extract_html(text)
-                    st.session_state["build_info"] = (
-                        f"{build_model} | {time.time()-start:.1f}s | "
-                        f"{len(st.session_state['project_html'])//1024} KB"
-                    )
-                    st.session_state["build_log"] = log
+                    st.session_state["project_html"] = extract_html(out)
+                    st.session_state["stage"] = "built"
+                    say("assistant",
+                        f"Built in {time.time()-start:.0f}s with "
+                        f"{build_model}. Playtest it on the right. If a red "
+                        "box appears, press and hold to copy it, then paste "
+                        "it in the box below.")
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    say("assistant", f"Error: {e}")
+            st.rerun()
 
+    if stage == "built" and st.session_state.get("previous_html"):
+        st.button("Undo last refine", on_click=undo_refine)
+
+with right:
     html = st.session_state.get("project_html")
     if html:
-        st.caption(st.session_state.get("build_info", ""))
         if "</html>" not in html.lower():
-            st.warning("The file looks cut off (no closing </html>). Use "
-                       "Refine below and ask it to finish the file.")
-        components.html(inject_errors(html), height=720, scrolling=False)
+            st.warning("The file looks cut off. Ask for a fix in the chat "
+                       "box: 'finish the file, it was cut off'.")
         st.download_button(
             "Download standalone HTML", data=html,
             file_name="nexus_project.html", mime="text/html",
         )
-
-        st.markdown("**Refine this build**")
-        fix = st.text_area(
-            "Paste the red-box errors, or describe a change",
-            key="refine_text", height=140,
+        t_prev, t_code, t_spec = st.tabs(["Preview", "Code", "Spec"])
+        with t_prev:
+            components.html(inject_errors(html), height=720, scrolling=False)
+        with t_code:
+            st.code(html, language="html", wrap_lines=True)
+        with t_spec:
+            st.code(st.session_state.get("spec", "(no spec yet)"),
+                    language="markdown", wrap_lines=True)
+    else:
+        st.markdown(
+            '<div class="nx-empty"><h3>No project yet</h3>'
+            'Your live preview will appear here.</div>',
+            unsafe_allow_html=True,
         )
-        if st.button("Refine build"):
-            if not fix.strip():
-                st.warning("Type or paste something to fix first.")
-            else:
-                start = time.time()
-                with st.spinner("Refining..."):
-                    try:
-                        text, key_no, log = pool.generate(
-                            f"REQUEST:\n{fix}\n\nCURRENT CODE:\n{html}",
-                            model=build_model, system=REFINE_SYSTEM,
-                            thinking=thinking, max_tokens=32000,
-                        )
-                        st.session_state["previous_html"] = html
-                        st.session_state["project_html"] = extract_html(text)
-                        st.session_state["build_info"] = (
-                            f"Refined | {build_model} | "
-                            f"{time.time()-start:.1f}s"
-                        )
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-        if st.session_state.get("previous_html"):
-            if st.button("Undo last refine"):
-                st.session_state["project_html"] = st.session_state.pop(
-                    "previous_html"
-                )
-                st.rerun()
-
-with tab3:
-    prompt = st.text_area("Test prompt", "Say hello in one short sentence.")
-    if st.button("Run test"):
-        start = time.time()
-        with st.spinner("Thinking..."):
-            try:
-                text, key_no, log = pool.generate(
-                    prompt, model=fast_model, thinking=thinking
-                )
-                st.write(text)
-                st.caption(
-                    f"{fast_model} | key #{key_no} | "
-                    f"{time.time()-start:.1f}s"
-                )
-            except Exception as e:
-                st.error(f"Error: {e}")
-    with st.expander("Key status (seconds of cooldown left)"):
-        st.write(pool.status())
