@@ -10,7 +10,7 @@ import streamlit.components.v1 as components
 from google import genai
 from google.genai import errors, types
 
-APP_VERSION = "v8"
+APP_VERSION = "v9"
 COOLDOWN_SECONDS = 60
 SKIP_WORDS = ("image", "tts", "embed", "live", "audio", "veo",
               "imagen", "robotics", "computer", "aqa")
@@ -18,85 +18,53 @@ SAVE_PATH = os.path.join(tempfile.gettempdir(), "nexus_last_project.html")
 SPEC_PATH = os.path.join(tempfile.gettempdir(), "nexus_last_spec.txt")
 
 PRESETS = {
-    "Fast": {"chain": ["gemini-3.6-flash", "gemini-3.5-flash",
-                       "gemini-3.5-flash-lite"],
-             "thinking": "low",
-             "desc": "Quick builds, light reasoning."},
-    "Balanced": {"chain": ["gemini-3.8-flash", "gemini-3.6-flash",
-                           "gemini-3.5-flash", "gemini-3.5-flash-lite"],
-                 "thinking": "low",
-                 "desc": "Best quality for the time. Recommended."},
-    "Deep": {"chain": ["gemini-3.8-flash", "gemini-3.6-flash",
-                       "gemini-3.5-flash"],
-             "thinking": "high",
-             "desc": "Slowest, most careful."},
+    "Fast": {
+        "chain": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
+        "thinking": "low",
+        "desc": "Quick builds, light reasoning.",
+    },
+    "Balanced": {
+        "chain": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
+        "thinking": "low",
+        "desc": "Best quality. Uses 3.8-flash with fallback safety.",
+    },
+    "Deep": {
+        "chain": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+        "thinking": "high",
+        "desc": "Deep reasoning passes. Slowest, most thorough.",
+    },
 }
-SPEC_CHAIN = ["gemini-3.5-flash-lite", "gemini-3.5-flash",
-              "gemini-3.6-flash"]
+SPEC_CHAIN = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash"]
 
-FACTORY_SYSTEM = """You are a senior software architect who writes build \
-specifications for an AI coding agent. Turn the user's short idea into ONE \
-complete, copy-paste-ready prompt. Output ONLY the prompt text, with no \
-preamble and no commentary.
+FACTORY_SYSTEM = """You are a senior software architect who writes build specifications for an AI coding agent. Turn the user's short idea into ONE complete, copy-paste-ready prompt. Output ONLY the prompt text, with no preamble and no commentary.
 
 The prompt you write must contain:
 1. GOAL: the core experience in 2-3 sentences.
-2. TECH CONSTRAINTS: one self-contained HTML file, vanilla JavaScript. If a \
-library is needed, only Three.js from cdnjs.cloudflare.com at a pinned \
-version; write any noise, math or helper functions inline instead of \
-loading extra libraries. No external images, fonts or audio files: draw \
-textures on a canvas and synthesize sound with the Web Audio API. Must run \
-on iPad Safari with touch controls.
-3. MODULAR ARCHITECTURE: named modules inside the file and the \
-responsibility of each.
-4. MUST-HAVE (MVP) vs STRETCH: list the core features that must work first, \
-then optional stretch features to add only if the MVP is stable. Prefer \
-simple, reliable techniques (for example, hidden-face culling instead of \
-greedy meshing; fresnel and color-gradient effects instead of depth-buffer \
-tricks).
-5. PHASED PLAN: Phase 1 core engine and state; Phase 2 visuals and layout; \
-Phase 3 mechanics, physics, edge cases; Phase 4 audio, polish, optimization.
-6. TECHNICAL DETAIL: the specific formulas, algorithms and data structures \
-this project needs.
-7. MOBILE PERFORMANCE: cap the pixel ratio at 2, limit render distance and \
-object counts, avoid per-frame allocations.
-8. ACCEPTANCE CRITERIA: a checkable list a script could verify (canvas \
-exists, zero console errors, no TODO or placeholder text, each listed \
-feature present and named).
-9. ZERO-PLACEHOLDER RULE: no TODO, no stubs, no omitted code; every \
-function fully written.
+2. TECH CONSTRAINTS: one self-contained HTML file, vanilla JavaScript. If a library is needed, only Three.js from cdnjs.cloudflare.com at a pinned version; write any noise, math or helper functions inline instead of loading extra libraries. No external images, fonts or audio files: draw textures on a canvas and synthesize sound with the Web Audio API. Must run on iPad Safari with touch controls.
+3. MODULAR ARCHITECTURE: named modules inside the file and the responsibility of each.
+4. MUST-HAVE (MVP) vs STRETCH: list the core features that must work first, then optional stretch features to add only if the MVP is stable. Prefer simple, reliable techniques (for example, hidden-face culling instead of greedy meshing; fresnel and color-gradient effects instead of depth-buffer tricks).
+5. PHASED PLAN: Phase 1 core engine and state; Phase 2 visuals and layout; Phase 3 mechanics, physics, edge cases; Phase 4 audio, polish, optimization.
+6. TECHNICAL DETAIL: the specific formulas, algorithms and data structures this project needs.
+7. MOBILE PERFORMANCE: cap the pixel ratio at 2, limit render distance and object counts, avoid per-frame allocations.
+8. ACCEPTANCE CRITERIA: a checkable list a script could verify (canvas exists, zero console errors, no TODO or placeholder text, each listed feature present and named).
+9. ZERO-PLACEHOLDER RULE: no TODO, no stubs, no omitted code; every function fully written.
 Be specific, not generic. Do not add features unrelated to the idea."""
 
-BUILDER_SYSTEM = """You are an expert front-end and WebGL engineer. Build \
-exactly what the specification asks for.
+BUILDER_SYSTEM = """You are an expert front-end and WebGL engineer. Build exactly what the specification asks for.
 
 Rules:
-- Output ONE complete, self-contained HTML file inside a single ```html \
-code block. No explanation before or after.
-- Zero placeholders: no TODO, no stubs, no "implement later", no omitted \
-code. Every function is fully written.
-- Vanilla JavaScript. External scripts only from cdnjs.cloudflare.com at \
-pinned versions. No external images, fonts or audio files.
-- Must work on iPad Safari: touch controls, responsive canvas, pixel ratio \
-capped at 2.
-- Build the MUST-HAVE features first and make them reliable. Add stretch \
-features only if they are safe.
-- Wrap risky initialization in try/catch and report problems with \
-console.error so they can be diagnosed."""
+- Output ONE complete, self-contained HTML file inside a single ```html code block. No explanation before or after.
+- Zero placeholders: no TODO, no stubs, no "implement later", no omitted code. Every function is fully written.
+- Vanilla JavaScript. External scripts only from cdnjs.cloudflare.com at pinned versions. No external images, fonts or audio files.
+- Must work on iPad Safari: touch controls, responsive canvas, pixel ratio capped at 2.
+- Build the MUST-HAVE features first and make them reliable. Add stretch features only if they are safe.
+- Wrap risky initialization in try/catch and report problems with console.error so they can be diagnosed."""
 
-REFINE_SYSTEM = """You are an expert front-end and WebGL engineer fixing an \
-existing single-file HTML project. Apply the requested fixes or changes to \
-the CURRENT code. Keep everything that already works unchanged.
+REFINE_SYSTEM = """You are an expert front-end and WebGL engineer fixing an existing single-file HTML project. Apply the requested fixes or changes to the CURRENT code. Keep everything that already works unchanged.
 
-When the request describes wrong behavior (for example a reversed \
-direction), trace the full data flow from input to what is rendered on \
-screen: input values and signs, index or lane mapping, world coordinates, \
-camera orientation and any mirrored axes. Find the single root cause and \
-fix it there. Do not stack compensating patches in several places, and \
-check for accidental double inversion.
+When the request describes wrong behavior (for example a reversed direction), trace the full data flow from input to what is rendered on screen: input values and signs, index or lane mapping, world coordinates, camera orientation and any mirrored axes. Find the single root cause and fix it there. Do not stack compensating patches in several places, and check for accidental double inversion.
 
-Output the COMPLETE updated file inside a single ```html code block, with \
-no explanation and no omitted sections."""
+Output the COMPLETE updated file inside a single ```html code block, with no explanation and no omitted sections."""
 
 ERROR_SNIPPET = r"""<script>
 (function(){
@@ -167,6 +135,14 @@ footer {visibility: hidden;}
 .nx-chip {
     font-size: .74rem; color: #aab2c8; background: #141824;
     border: 1px solid #232838; border-radius: 999px; padding: 4px 12px;
+}
+.nx-chip-fallback {
+    font-size: .74rem; color: #ffd166; background: #282014;
+    border: 1px solid #5a4218; border-radius: 999px; padding: 4px 12px;
+}
+.nx-chip-primary {
+    font-size: .74rem; color: #72f1b8; background: #11261d;
+    border: 1px solid #1d523b; border-radius: 999px; padding: 4px 12px;
 }
 .nx-win {
     display: flex; align-items: center; gap: 7px;
@@ -277,9 +253,14 @@ class KeyPool:
             kwargs["system_instruction"] = system
         if max_tokens:
             kwargs["max_output_tokens"] = max_tokens
-        if thinking != "off" and model not in self.no_thinking:
+        # Enforce 'low' as the floor for reasoning models if not disabled
+        effective_thinking = thinking
+        if "3.8" in model and thinking == "off":
+            effective_thinking = "low"
+
+        if effective_thinking != "off" and model not in self.no_thinking:
             kwargs["thinking_config"] = types.ThinkingConfig(
-                thinking_level=thinking
+                thinking_level=effective_thinking
             )
         return types.GenerateContentConfig(**kwargs) if kwargs else None
 
@@ -301,19 +282,24 @@ class KeyPool:
             return []
 
     def generate(self, prompt, models, system=None, thinking="low",
-                 max_tokens=None, notify=None, patience=3):
-        """Try each model in order. Returns (text, model_used, key_no, log)."""
+                 max_tokens=None, notify=None, patience=3, no_fallback=False):
+        """Try models in order. If no_fallback is True, only attempts models[0]."""
         if isinstance(models, str):
             models = [models]
+        if no_fallback:
+            models = [models[0]]
+
         tell = notify or (lambda m: None)
         log = []
         last = len(models) - 1
+
         for idx, model in enumerate(models):
             if idx != last and self.model_down.get(model, 0) > time.time():
                 log.append(f"{model}: skipped (recently overloaded)")
                 continue
             overloaded = limited = other = 0
-            deadline = time.time() + 240
+            deadline = time.time() + (300 if patience > 3 else 180)
+
             while time.time() < deadline:
                 i, wait = self._pick(model)
                 if i is None:
@@ -322,6 +308,7 @@ class KeyPool:
                     tell(f"{model}: waiting {int(wait)}s for rate limits...")
                     time.sleep(min(wait, 5) + 0.1)
                     continue
+
                 config = self._config(model, system, thinking, max_tokens)
                 t0 = time.time()
                 try:
@@ -332,8 +319,7 @@ class KeyPool:
                     response = client.models.generate_content(
                         model=model, contents=prompt, config=config
                     )
-                    log.append(f"{model} key {i+1}: OK in "
-                               f"{time.time()-t0:.1f}s")
+                    log.append(f"{model} key {i+1}: OK in {time.time()-t0:.1f}s")
                     return (response.text or ""), model, i + 1, log
                 except errors.APIError as e:
                     code = e.code
@@ -346,20 +332,30 @@ class KeyPool:
                         overloaded += 1
                         if overloaded >= patience:
                             self.model_down[model] = time.time() + 120
-                            tell(f"{model} is overloaded. Switching to the "
-                                 "next model...")
+                            if no_fallback:
+                                raise RuntimeError(
+                                    f"{model} is currently overloaded (503). "
+                                    "'Never fall back' is ON. Use the Manual "
+                                    "Hand-off below or try again shortly."
+                                )
+                            tell(f"{model} is overloaded. Switching to next model...")
                             break
-                        delay = 4 * 2 ** (overloaded - 1) + random.random()
-                        tell(f"{model} is busy (error {code}). Retrying in "
-                             f"{delay:.0f}s...")
+                        delay = min(4 * 2 ** (overloaded - 1) + random.random(), 30)
+                        tell(f"{model} is busy (error {code}). Attempt {overloaded}/{patience}. "
+                             f"Retrying in {delay:.0f}s...")
                         time.sleep(delay)
                     elif code == 429:
                         limited += 1
                         self.cool[(i, model)] = time.time() + COOLDOWN_SECONDS
                         if limited >= len(self.keys):
                             self.model_down[model] = time.time() + 300
-                            tell(f"{model} hit its rate limit on every key. "
-                                 "Switching...")
+                            if no_fallback:
+                                raise RuntimeError(
+                                    f"{model} hit rate limits on all keys. "
+                                    "'Never fall back' is ON. Wait 60s or use "
+                                    "Manual Hand-off."
+                                )
+                            tell(f"{model} hit its rate limit on every key. Switching...")
                             break
                     elif code in (401, 403):
                         self.cool[(i, model)] = time.time() + 3600
@@ -374,6 +370,7 @@ class KeyPool:
                     if other >= 4:
                         break
                     time.sleep(2)
+
         tail = "; ".join(log[-4:])
         raise RuntimeError(
             "Every model is busy or limited right now. Wait a couple of "
@@ -491,7 +488,7 @@ def restore_last():
 
 def reset_all():
     for k in ("spec", "project_html", "previous_html", "loaded_sig",
-              "saved_sig"):
+              "saved_sig", "last_used_model", "target_model"):
         st.session_state.pop(k, None)
     for p in (SAVE_PATH, SPEC_PATH):
         try:
@@ -505,9 +502,7 @@ def reset_all():
 
 def undo_refine():
     if st.session_state.get("previous_html"):
-        st.session_state["project_html"] = st.session_state.pop(
-            "previous_html"
-        )
+        st.session_state["project_html"] = st.session_state.pop("previous_html")
         say("assistant", "Undid the last refine.")
 
 
@@ -562,21 +557,39 @@ restore_last()
 with st.sidebar:
     st.markdown('<div class="nx-brand"><span class="nx-dot"></span>NEXUS '
                 '<b>AI STUDIO</b></div>', unsafe_allow_html=True)
-    st.caption(f"{len(pool.keys)} keys loaded | password gate: "
+    st.caption(f"{len(pool.keys)} keys loaded | gate: "
                f"{'on' if get_password() else 'off'}")
+    
     words = st.number_input("Spec length in words (0 = auto)", 0, 3000, 0, 50)
+    
+    st.divider()
+    st.markdown("<b>Execution Settings</b>", unsafe_allow_html=True)
+    patience_choice = st.radio(
+        "Patience for busy models",
+        ["Quick (fast fallback)", "Patient (wait up to 2m)"],
+        index=0,
+        help="Patient will retry 3.8 longer before dropping to a fallback model."
+    )
+    patience_val = 6 if "Patient" in patience_choice else 3
+
+    no_fallback_refine = st.toggle(
+        "Never fall back on Refine",
+        value=True,
+        help="If 3.8 is busy, stops and lets you wait or use Manual Hand-off instead of letting a weaker model rewrite the file."
+    )
+
     manual = st.toggle("Choose first-choice models manually")
     manual_build = manual_spec = None
     if manual:
         manual_spec = st.selectbox(
             "Spec model", models,
-            index=models.index(resolve(models, ["gemini-3.5-flash-lite"],
-                                       "lite")),
+            index=models.index(resolve(models, ["gemini-3.5-flash-lite"], "lite")),
         )
         manual_build = st.selectbox(
             "Builder model", models,
             index=models.index(resolve(models, ["gemini-3.8-flash"])),
         )
+    
     st.divider()
     up = st.file_uploader(
         "Open a saved .html project", type=["html", "htm"],
@@ -607,7 +620,7 @@ with st.sidebar:
             t0 = time.time()
             try:
                 m = resolve(models, ["gemini-3.5-flash-lite"], "lite")
-                pool.generate("Say hi.", [m], thinking="off")
+                pool.generate("Say hi.", [m], thinking="low")
                 st.write(f"{m}: {time.time()-t0:.1f}s")
             except Exception as e:
                 st.error(str(e))
@@ -621,29 +634,44 @@ build_thinking = PRESETS[mode]["thinking"]
 stage = st.session_state["stage"]
 
 
-def run_ai(prompt, chain, system, thinking, max_tokens, label):
+def run_ai(prompt, chain, system, thinking, max_tokens, label, no_fallback=False):
     ph = st.empty()
-    ph.caption(f"{label} with {chain[0]}...")
+    target_model = chain[0]
+    st.session_state["target_model"] = target_model
+    ph.caption(f"{label} with {target_model}...")
     start = time.time()
     try:
         text, used, _, _ = pool.generate(
             prompt, chain, system=system, thinking=thinking,
             max_tokens=max_tokens, notify=lambda m: ph.caption(m),
+            patience=patience_val, no_fallback=no_fallback,
         )
     finally:
         ph.empty()
+    
+    st.session_state["last_used_model"] = used
     note = ""
-    if used != chain[0]:
-        note = f" ({chain[0]} was busy, so a fallback model was used)"
+    if used != target_model:
+        note = f" (Target {target_model} was busy; fell back to {used})"
     return text, used, time.time() - start, note
 
 
 # ---------------- Top bar ----------------
+last_model = st.session_state.get("last_used_model")
+target_model = st.session_state.get("target_model")
+
+chip_badge = ""
+if last_model and target_model:
+    if last_model == target_model:
+        chip_badge = f'<span class="nx-chip-primary">Built with {last_model}</span>'
+    else:
+        chip_badge = f'<span class="nx-chip-fallback">Fallback: {last_model} (wanted {target_model})</span>'
+
 st.markdown(
     '<div class="nx-top"><div class="nx-brand"><span class="nx-dot"></span>'
     'NEXUS <b>AI STUDIO</b></div><div class="nx-chips">'
     f'<span class="nx-chip">{mode} mode</span>'
-    f'<span class="nx-chip">{build_chain_list[0]}</span>'
+    f'{chip_badge}'
     f'<span class="nx-chip">{len(pool.keys)} keys</span>'
     '</div></div>',
     unsafe_allow_html=True,
@@ -686,15 +714,15 @@ with left:
                 out, used, secs, note = run_ai(
                     f"REQUEST:\n{text}\n\nCURRENT CODE:\n{html}",
                     build_chain_list, REFINE_SYSTEM, build_thinking,
-                    32000, "Refining",
+                    32000, "Refining", no_fallback=no_fallback_refine,
                 )
                 st.session_state["previous_html"] = html
                 st.session_state["project_html"] = extract_html(out)
                 say("assistant",
-                    f"Refined in {secs:.0f}s with {used}{note}. Playtest it, "
+                    f"Refined in {secs:.0f}s with **{used}**{note}. Playtest it, "
                     "or tap **Undo last refine** if it got worse.")
             except Exception as e:
-                say("assistant", f"Error: {e}")
+                say("assistant", f"Notice: {e}")
             st.rerun()
 
     if not st.session_state["history"]:
@@ -710,25 +738,45 @@ with left:
         with st.expander("Copy spec"):
             st.code(st.session_state.get("spec", ""), language="markdown",
                     wrap_lines=True)
-        if st.button("Build project", type="primary",
-                     use_container_width=True):
+        if st.button("Build project", type="primary", use_container_width=True):
             try:
                 out, used, secs, note = run_ai(
                     st.session_state["spec"], build_chain_list,
                     BUILDER_SYSTEM, build_thinking, 32000, "Building",
+                    no_fallback=False,
                 )
                 st.session_state["project_html"] = extract_html(out)
                 st.session_state["stage"] = "built"
                 say("assistant",
-                    f"Built in {secs:.0f}s with {used}{note}. Playtest it on "
-                    "the right. If a red box appears, press and hold to "
-                    "copy it, then paste it in the box below.")
+                    f"Built in {secs:.0f}s with **{used}**{note}. Playtest it on "
+                    "the right. If a red box appears, copy it, then paste it below.")
             except Exception as e:
                 say("assistant", f"Error: {e}")
             st.rerun()
 
-    if stage == "built" and st.session_state.get("previous_html"):
-        st.button("Undo last refine", on_click=undo_refine)
+    if stage == "built":
+        c_undo, _ = st.columns([1, 1])
+        with c_undo:
+            if st.session_state.get("previous_html"):
+                st.button("Undo last refine", on_click=undo_refine)
+
+        # Manual AI Studio Hand-off Section
+        with st.expander("📋 Manual AI Studio Hand-off (when 3.8 is busy)"):
+            st.caption("If the API is congested, copy this bundle directly into Google AI Studio, then paste its HTML output below.")
+            curr_code = st.session_state.get("project_html", "")
+            manual_bundle = (
+                f"{REFINE_SYSTEM}\n\n"
+                f"CURRENT CODE:\n```html\n{curr_code}\n```\n\n"
+                f"USER REQUEST:\n{st.session_state['history'][-1]['text'] if st.session_state['history'] else 'Apply fixes.'}\n"
+            )
+            st.code(manual_bundle, language="markdown", wrap_lines=True)
+            pasted_code = st.text_area("Paste AI Studio Output HTML here", height=120)
+            if st.button("Load Pasted Code into Preview"):
+                if pasted_code.strip():
+                    st.session_state["previous_html"] = curr_code
+                    st.session_state["project_html"] = extract_html(pasted_code)
+                    say("assistant", "Loaded your manual code from AI Studio. Test it on the right!")
+                    st.rerun()
 
 with right:
     html = st.session_state.get("project_html")
