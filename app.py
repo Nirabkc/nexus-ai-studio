@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 from google import genai
 from google.genai import errors, types
 
-APP_VERSION = "v15"
+APP_VERSION = "v16"
 COOLDOWN_SECONDS = 60
 SKIP_WORDS = ("image", "tts", "embed", "live", "audio", "veo",
               "imagen", "robotics", "computer", "aqa")
@@ -22,23 +22,6 @@ SAVE_PATH = os.path.join(tempfile.gettempdir(), "nexus_last_project.json")
 SPEC_PATH = os.path.join(tempfile.gettempdir(), "nexus_last_spec.txt")
 STATE_PATH = os.path.join(tempfile.gettempdir(), "nexus_worker_state.json")
 
-PRESETS = {
-    "Turbo": {
-        "chain": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
-        "thinking": "low",
-        "desc": "Fastest answers & rapid drafting.",
-    },
-    "High": {
-        "chain": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
-        "thinking": "low",
-        "desc": "Antigravity standard. Uses gemini-3.8-flash with fallback.",
-    },
-    "Deep": {
-        "chain": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-        "thinking": "high",
-        "desc": "Advanced reasoning & deep multi-pass logic.",
-    },
-}
 SPEC_CHAIN = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash"]
 
 FACTORY_SYSTEM = """You are a senior software architect who writes build specifications for an AI coding agent. Turn the user's short idea into ONE complete, copy-paste-ready prompt. Output ONLY the prompt text, with no preamble and no commentary.
@@ -300,6 +283,15 @@ footer {visibility: hidden !important;}
     50% { transform: scale(1.3); opacity: 1; }
 }
 
+.ag-recovery-card {
+    background: #1a1114;
+    border: 1px solid #4a1d24;
+    border-radius: 12px;
+    padding: 24px;
+    text-align: center;
+    margin: 20px 0;
+}
+
 .ag-chassis {
     background: #0f1016;
     border: 1px solid #1a1b24;
@@ -417,7 +409,6 @@ div[role="radiogroup"] label:has(input:checked) {
 
 
 def extract_project_files(text):
-    """Extracts multiple files from <boltAction> tags or falls back to single-file HTML."""
     files = {}
     pattern = r'<boltAction\s+type="file"\s+filePath="([^"]+)">\n?(.*?)</boltAction>'
     matches = re.findall(pattern, text, re.DOTALL)
@@ -438,7 +429,6 @@ def extract_project_files(text):
 
 
 def bundle_for_preview(files):
-    """Virtually stitches modular CSS/JS files into HTML for live iframe execution."""
     main_html = files.get("index.html")
     if not main_html:
         for k, v in files.items():
@@ -502,13 +492,11 @@ class KeyPool:
             kwargs["system_instruction"] = system
         if max_tokens:
             kwargs["max_output_tokens"] = max_tokens
-        effective_thinking = thinking
-        if "3.8" in model and thinking == "off":
-            effective_thinking = "low"
-
-        if effective_thinking != "off" and model not in self.no_thinking:
+        
+        # Explicit thinking levels
+        if thinking and thinking.lower() != "off" and model not in self.no_thinking:
             kwargs["thinking_config"] = types.ThinkingConfig(
-                thinking_level=effective_thinking
+                thinking_level=thinking.lower()
             )
         return types.GenerateContentConfig(**kwargs) if kwargs else None
 
@@ -530,7 +518,7 @@ class KeyPool:
             return []
 
     def generate(self, prompt, models, system=None, thinking="low",
-                 max_tokens=None, notify=None, patience=3, no_fallback=False,
+                 max_tokens=None, notify=None, patience=2, no_fallback=False,
                  stop_check=None):
         if isinstance(models, str):
             models = [models]
@@ -549,7 +537,7 @@ class KeyPool:
                 log.append(f"{model}: skipped (cooling)")
                 continue
             overloaded = limited = other = 0
-            deadline = time.time() + (300 if patience > 3 else 180)
+            deadline = time.time() + (240 if patience > 2 else 120)
 
             while time.time() < deadline:
                 if stop_check and stop_check():
@@ -574,7 +562,6 @@ class KeyPool:
                         model=model, contents=prompt, config=config
                     )
                     
-                    # Robust parsing of candidate parts (separating thought trace from code output)
                     thoughts = ""
                     code_text = ""
                     try:
@@ -596,7 +583,7 @@ class KeyPool:
                             pass
 
                     if not code_text.strip():
-                        raise RuntimeError(f"{model} completed thinking but output was empty. The output token ceiling may have been hit.")
+                        raise RuntimeError(f"{model} returned empty code text.")
 
                     log.append(f"{model} key {i+1}: OK in {time.time()-t0:.1f}s")
                     return code_text, model, i + 1, log, thoughts
@@ -604,8 +591,7 @@ class KeyPool:
                 except errors.APIError as e:
                     code = e.code
                     log.append(f"{model} key {i+1}: error {code}")
-                    if (code == 400 and thinking != "off"
-                            and model not in self.no_thinking):
+                    if (code == 400 and thinking.lower() != "off" and model not in self.no_thinking):
                         self.no_thinking.add(model)
                         continue
                     if code in (500, 502, 503, 504):
@@ -613,10 +599,10 @@ class KeyPool:
                         if overloaded >= patience:
                             self.model_down[model] = time.time() + 120
                             if no_fallback:
-                                raise RuntimeError(f"{model} overloaded (503). Never-fallback is on.")
-                            tell(f"{model} queue saturated. Falling back...")
+                                raise RuntimeError(f"{model} is busy (HTTP 503). Never-fallback is on.")
+                            tell(f"{model} queue congested (503). Shifting to fallback model...")
                             break
-                        delay = min(4 * 2 ** (overloaded - 1) + random.random(), 30)
+                        delay = min(3 * (overloaded), 15)
                         tell(f"{model} busy ({code}). Attempt {overloaded}/{patience}. Retry in {delay:.0f}s...")
                         time.sleep(delay)
                     elif code == 429:
@@ -638,7 +624,7 @@ class KeyPool:
                 except Exception as e:
                     other += 1
                     log.append(f"{model} key {i+1}: {type(e).__name__}")
-                    if other >= 4:
+                    if other >= 3:
                         break
                     time.sleep(2)
 
@@ -715,7 +701,7 @@ class BackgroundWorker:
             self.state["result_raw"] = None
             self.state["thoughts"] = None
             self.state["error"] = None
-            self.state["logs"] = [f"[{time.strftime('%H:%M:%S')}] Agent started in background."]
+            self.state["logs"] = [f"[{time.strftime('%H:%M:%S')}] Agent dispatched."]
             self._save_to_disk()
 
             self.thread = threading.Thread(
@@ -822,6 +808,10 @@ def build_chain(models, wanted, first=None):
     chain = [m for m in wanted if m in models]
     if first:
         chain = [first] + [m for m in chain if m != first]
+    # Always guarantee 3.5-flash-lite as the ultimate safety net
+    lite_model = resolve(models, ["gemini-3.5-flash-lite"], "lite")
+    if lite_model not in chain:
+        chain.append(lite_model)
     return chain or [models[0]]
 
 
@@ -882,7 +872,7 @@ def restore_last():
 
 def reset_all():
     for k in ("spec", "project_files", "previous_files", "loaded_sig",
-              "saved_sig", "last_used_model", "target_model", "last_thoughts"):
+              "saved_sig", "last_used_model", "target_model", "last_thoughts", "last_error"):
         st.session_state.pop(k, None)
     for p in (SAVE_PATH, SPEC_PATH, STATE_PATH):
         try:
@@ -929,12 +919,11 @@ st.markdown(CSS, unsafe_allow_html=True)
 if not password_ok():
     st.stop()
 
-if "mode" not in st.session_state or st.session_state["mode"] not in PRESETS:
-    st.session_state["mode"] = "High"
-
 st.session_state.setdefault("stage", "idea")
 st.session_state.setdefault("history", [])
 st.session_state.setdefault("up_n", 0)
+st.session_state.setdefault("thinking_level", "Low")
+st.session_state.setdefault("primary_model_choice", "gemini-3.8-flash")
 
 pool = get_pool(APP_VERSION)
 worker = get_worker(APP_VERSION)
@@ -953,6 +942,7 @@ restore_last()
 # Process background worker completion
 res_raw, err, used, task, secs, thoughts = worker.clear_finished()
 if res_raw and len(res_raw.strip()) > 0:
+    st.session_state.pop("last_error", None)
     if thoughts:
         st.session_state["last_thoughts"] = thoughts
     parsed_files = extract_project_files(res_raw)
@@ -968,7 +958,8 @@ if res_raw and len(res_raw.strip()) > 0:
         st.session_state["last_used_model"] = used
         say("assistant", f"Refined {len(parsed_files)} file(s) in {secs:.0f}s via **{used}**. Canvas updated!")
 elif err:
-    say("assistant", f"Task notice: {err}")
+    st.session_state["last_error"] = str(err)
+    say("assistant", f"Build notice: {err}")
 
 # ---------------- Sidebar ----------------
 with st.sidebar:
@@ -976,33 +967,40 @@ with st.sidebar:
     st.caption(f"{len(pool.keys)} project keys loaded | Multi-File Engine")
     
     words = st.number_input("Spec Word Target (0 = Auto)", 0, 3000, 0, 50)
-    auto_build_toggle = st.toggle("Auto-Synthesize (Bolt Style)", value=True, help="Automatically builds the project immediately after drafting the spec.")
+    auto_build_toggle = st.toggle("Auto-Synthesize (Bolt Style)", value=True, help="Automatically builds immediately after spec is generated.")
 
     st.divider()
-    st.markdown("<b>Execution Settings</b>", unsafe_allow_html=True)
+    st.markdown("<b>Model & Thinking Engine</b>", unsafe_allow_html=True)
+    
+    # Model Dropdown matching Gemini Desktop
+    preferred_models = [m for m in ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"] if m in models] or models
+    primary_model = st.selectbox(
+        "Primary Engine",
+        preferred_models,
+        index=0,
+        key="primary_model_choice"
+    )
+
+    # Thinking Level Selector matching screenshot
+    thinking_level_ui = st.select_slider(
+        "Thinking Level",
+        options=["Off", "Low", "Medium", "High"],
+        value=st.session_state["thinking_level"],
+        key="thinking_level"
+    )
+
     patience_choice = st.radio(
         "Model Patience",
         ["Quick (Fast Fallback)", "Patient (Hold for 3.8)"],
         index=0,
     )
-    patience_val = 6 if "Patient" in patience_choice else 3
+    patience_val = 5 if "Patient" in patience_choice else 2
 
     no_fallback_refine = st.toggle(
         "Lock Refine to Primary Model",
-        value=True,
+        value=False,
+        help="If off, automatically uses fallback models if 3.8 is busy."
     )
-
-    manual = st.toggle("Override Model Endpoints")
-    manual_build = manual_spec = None
-    if manual:
-        manual_spec = st.selectbox(
-            "Architect Model", models,
-            index=models.index(resolve(models, ["gemini-3.5-flash-lite"], "lite")),
-        )
-        manual_build = st.selectbox(
-            "Synthesizer Model", models,
-            index=models.index(resolve(models, ["gemini-3.8-flash"])),
-        )
     
     st.divider()
     up = st.file_uploader(
@@ -1043,14 +1041,9 @@ with st.sidebar:
     st.button("Clear Workspace", on_click=reset_all)
 
 # ---------------- Active Models ----------------
-mode = st.session_state.get("mode", "High")
-if mode not in PRESETS:
-    mode = "High"
-    st.session_state["mode"] = "High"
-
-spec_chain = build_chain(models, SPEC_CHAIN, manual_spec)
-build_chain_list = build_chain(models, PRESETS[mode]["chain"], manual_build)
-build_thinking = PRESETS[mode]["thinking"]
+spec_chain = build_chain(models, SPEC_CHAIN)
+build_chain_list = build_chain(models, [primary_model, "gemini-3.6-flash", "gemini-3.5-flash-lite"], first=primary_model)
+build_thinking = st.session_state["thinking_level"]
 stage = st.session_state["stage"]
 
 
@@ -1071,22 +1064,22 @@ def background_task_runner(w_inst, prompt, chain, system, thinking, max_tokens, 
 
 # ---------------- Top Bar ----------------
 last_model = st.session_state.get("last_used_model")
-target_model = st.session_state.get("target_model")
+target_model = st.session_state.get("target_model") or build_chain_list[0]
 
 chip_badge = ""
-if last_model and target_model:
+if last_model:
     if last_model == target_model:
         chip_badge = f'<span class="ag-badge-active">● {last_model}</span>'
     else:
         chip_badge = f'<span class="ag-badge-fallback">▲ {last_model}</span>'
 else:
-    chip_badge = f'<span class="ag-badge">● {build_chain_list[0]}</span>'
+    chip_badge = f'<span class="ag-badge">● {target_model}</span>'
 
 st.markdown(
     '<div class="ag-bar">'
     '<div class="ag-title"><span class="ag-sparkle"></span>GEMINI <b>ANTIGRAVITY</b></div>'
     '<div class="ag-badges">'
-    f'<span class="ag-badge">{mode.upper()} EFFORT</span>'
+    f'<span class="ag-badge">{build_thinking.upper()} THINKING</span>'
     f'{chip_badge}'
     f'<span class="ag-badge">{len(pool.keys)} KEYS ACTIVE</span>'
     '</div></div>',
@@ -1128,7 +1121,7 @@ if stage == "idea":
     st.markdown(
         '<div class="gem-hero">'
         '<div class="gem-greeting">Hi, <span>what’s on your mind?</span></div>'
-        '<div class="gem-tag">✦ Gemini 3.8 Flash • Bolt 1-Click Synthesis</div>'
+        f'<div class="gem-tag">✦ {primary_model} • {build_thinking} Thinking</div>'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -1161,7 +1154,6 @@ if stage == "idea":
             ph.empty()
             
             if auto_build_toggle:
-                # 1-Click Bolt flow: Automatically start synthesizing code immediately!
                 st.session_state["target_model"] = build_chain_list[0]
                 st.session_state["stage"] = "spec"
                 say("assistant", f"Specification mapped ({len(spec.split())} words). Dispatched synthesizer agent to build project...")
@@ -1183,8 +1175,12 @@ else:
     left, right = st.columns([2, 3], gap="large")
 
     with left:
-        st.radio("Effort", list(PRESETS), horizontal=True,
-                 label_visibility="collapsed", key="mode", disabled=is_busy)
+        # Engine Control Card on active workspace
+        c_m1, c_m2 = st.columns(2)
+        with c_m1:
+            st.caption(f"Engine: **{primary_model}**")
+        with c_m2:
+            st.caption(f"Thinking: **{build_thinking}**")
 
         if st.session_state.get("last_thoughts"):
             with st.expander("💭 View Model Thought Process", expanded=False):
@@ -1249,6 +1245,8 @@ else:
 
     with right:
         files = st.session_state.get("project_files")
+        last_err = st.session_state.get("last_error")
+
         if files:
             autosave(files)
             assembled_html = bundle_for_preview(files)
@@ -1290,9 +1288,51 @@ else:
                     st.code(files[selected_file], language=lang, wrap_lines=True)
             with t_spec:
                 st.code(st.session_state.get("spec", "(no spec yet)"), language="markdown", wrap_lines=True)
+
+        elif last_err and not is_busy:
+            # Active Crash Recovery Card
+            st.markdown(
+                '<div class="ag-chassis">'
+                '<div class="ag-controls"><span class="ag-c-red"></span><span class="ag-c-yellow"></span><span class="ag-c-green"></span></div>'
+                '<div class="ag-chassis-title">synthesis_interrupted</div>'
+                '<div></div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                '<div class="ag-recovery-card">'
+                '<h3 style="color:#ef4444; margin-bottom:8px;">▲ Server Congestion Detected</h3>'
+                '<p style="color:#94a3b8; font-size:0.85rem;">Google\'s 3.8 and 3.6 endpoints are currently shedding load (HTTP 503). Your specification is safely preserved.</p>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            c_r1, c_r2 = st.columns(2)
+            with c_r1:
+                if st.button("⚡ Fast Re-Build with Flash-Lite (Guaranteed 15s)", type="primary", use_container_width=True):
+                    lite_chain = ["gemini-3.5-flash-lite"]
+                    st.session_state["target_model"] = "gemini-3.5-flash-lite"
+                    st.session_state.pop("last_error", None)
+                    worker.start(
+                        "Build",
+                        background_task_runner,
+                        (st.session_state.get("spec", ""), lite_chain,
+                         BUILDER_SYSTEM, "off", 32000, False)
+                    )
+                    st.rerun()
+            with c_r2:
+                if st.button("🔄 Retry with 3.8", use_container_width=True):
+                    st.session_state.pop("last_error", None)
+                    worker.start(
+                        "Build",
+                        background_task_runner,
+                        (st.session_state.get("spec", ""), build_chain_list,
+                         BUILDER_SYSTEM, build_thinking, 32000, False)
+                    )
+                    st.rerun()
+
         else:
             status_text = "AGENT SYNTHESIZING CODE..." if is_busy else "CANVAS IDLE"
-            sub_text = "Building multi-file Three.js project in background..." if is_busy else "Awaiting agent build output."
+            sub_text = "Building multi-file project in background..." if is_busy else "Awaiting agent build output."
             pulse_badge = '<span class="ag-pulse-dot"></span>' if is_busy else ''
             
             st.markdown(
