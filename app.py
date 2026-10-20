@@ -1,9 +1,11 @@
 import os
 import re
+import io
 import json
 import hmac
 import time
 import random
+import zipfile
 import tempfile
 import threading
 import streamlit as st
@@ -11,11 +13,12 @@ import streamlit.components.v1 as components
 from google import genai
 from google.genai import errors, types
 
-APP_VERSION = "v13"
+APP_VERSION = "v14"
 COOLDOWN_SECONDS = 60
 SKIP_WORDS = ("image", "tts", "embed", "live", "audio", "veo",
               "imagen", "robotics", "computer", "aqa")
-SAVE_PATH = os.path.join(tempfile.gettempdir(), "nexus_last_project.html")
+
+SAVE_PATH = os.path.join(tempfile.gettempdir(), "nexus_last_project.json")
 SPEC_PATH = os.path.join(tempfile.gettempdir(), "nexus_last_spec.txt")
 STATE_PATH = os.path.join(tempfile.gettempdir(), "nexus_worker_state.json")
 
@@ -28,7 +31,7 @@ PRESETS = {
     "High": {
         "chain": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
         "thinking": "low",
-        "desc": "All-around help & complex builds (Recommended).",
+        "desc": "Antigravity standard. Uses gemini-3.8-flash with fallback.",
     },
     "Deep": {
         "chain": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
@@ -38,35 +41,64 @@ PRESETS = {
 }
 SPEC_CHAIN = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash"]
 
+# --- Bolt.diy Inspired Master Prompts ---
 FACTORY_SYSTEM = """You are a senior software architect who writes build specifications for an AI coding agent. Turn the user's short idea into ONE complete, copy-paste-ready prompt. Output ONLY the prompt text, with no preamble and no commentary.
 
 The prompt you write must contain:
 1. GOAL: the core experience in 2-3 sentences.
-2. TECH CONSTRAINTS: one self-contained HTML file, vanilla JavaScript. If a library is needed, only Three.js from cdnjs.cloudflare.com at a pinned version; write any noise, math or helper functions inline instead of loading extra libraries. No external images, fonts or audio files: draw textures on a canvas and synthesize sound with the Web Audio API. Must run on iPad Safari with touch controls.
-3. MODULAR ARCHITECTURE: named modules inside the file and the responsibility of each.
-4. MUST-HAVE (MVP) vs STRETCH: list the core features that must work first, then optional stretch features to add only if the MVP is stable. Prefer simple, reliable techniques (for example, hidden-face culling instead of greedy meshing; fresnel and color-gradient effects instead of depth-buffer tricks).
-5. PHASED PLAN: Phase 1 core engine and state; Phase 2 visuals and layout; Phase 3 mechanics, physics, edge cases; Phase 4 audio, polish, optimization.
-6. TECHNICAL DETAIL: the specific formulas, algorithms and data structures this project needs.
-7. MOBILE PERFORMANCE: cap the pixel ratio at 2, limit render distance and object counts, avoid per-frame allocations.
-8. ACCEPTANCE CRITERIA: a checkable list a script could verify (canvas exists, zero console errors, no TODO or placeholder text, each listed feature present and named).
-9. ZERO-PLACEHOLDER RULE: no TODO, no stubs, no omitted code; every function fully written.
-Be specific, not generic. Do not add features unrelated to the idea."""
+2. TECH CONSTRAINTS: Vanilla JavaScript or Three.js from cdnjs.cloudflare.com (pinned version). Modular architecture with clean file separation (e.g. index.html, style.css, game.js). No external images, fonts or audio files: draw textures on canvas and synthesize audio with Web Audio API. Touch controls for iPad Safari.
+3. MULTI-FILE ARCHITECTURE: Name each file and its exact responsibility.
+4. MUST-HAVE vs STRETCH: Core gameplay loops first; stretch features only if safe.
+5. PERFORMANCE: Cap pixel ratio at 2, avoid per-frame allocations, profile garbage collection.
+6. ACCEPTANCE CRITERIA: A checkable list of items a script could verify.
+7. ZERO-PLACEHOLDER RULE: No TODOs, no stubs, every file and function fully written.
+Be specific and concise."""
 
-BUILDER_SYSTEM = """You are an expert front-end and WebGL engineer. Build exactly what the specification asks for.
+BUILDER_SYSTEM = """You are an expert full-stack WebGL and front-end engineer inspired by Bolt.diy.
+Build exactly what the specification asks for using clean modular file architecture.
+
+CRITICAL OUTPUT FORMAT RULES:
+Wrap your entire project inside a <boltArtifact> tag with individual <boltAction> tags for each file:
+
+<boltArtifact id="project-id" title="Project Name">
+<boltAction type="file" filePath="index.html">
+<!DOCTYPE html>
+<html>
+...
+<link rel="stylesheet" href="style.css">
+<script src="game.js"></script>
+...
+</html>
+</boltAction>
+<boltAction type="file" filePath="style.css">
+/* Clean modern styles, touch-friendly min 44px tap targets */
+</boltAction>
+<boltAction type="file" filePath="game.js">
+// Complete implementation with zero placeholders
+</boltAction>
+</boltArtifact>
 
 Rules:
-- Output ONE complete, self-contained HTML file inside a single ```html code block. No explanation before or after.
-- Zero placeholders: no TODO, no stubs, no "implement later", no omitted code. Every function is fully written.
-- Vanilla JavaScript. External scripts only from cdnjs.cloudflare.com at pinned versions. No external images, fonts or audio files.
-- Must work on iPad Safari: touch controls, responsive canvas, pixel ratio capped at 2.
-- Build the MUST-HAVE features first and make them reliable. Add stretch features only if they are safe.
-- Wrap risky initialization in try/catch and report problems with console.error so they can be diagnosed."""
+- Output ONLY the <boltArtifact> block. No explanation before or after.
+- Zero placeholders: NO `// TODO`, NO `// Implement later`, NO truncated code. Every single function must be fully written.
+- External libraries: ONLY from cdnjs.cloudflare.com at pinned versions.
+- Mobile first: Responsive canvas, touch controls, pixel ratio capped at 2."""
 
-REFINE_SYSTEM = """You are an expert front-end and WebGL engineer fixing an existing single-file HTML project. Apply the requested fixes or changes to the CURRENT code. Keep everything that already works unchanged.
+REFINE_SYSTEM = """You are an expert full-stack and WebGL engineer modifying an existing multi-file project.
+Apply the requested changes to the CURRENT project files. Keep everything that already works unchanged.
 
-When the request describes wrong behavior (for example a reversed direction), trace the full data flow from input to what is rendered on screen: input values and signs, index or lane mapping, world coordinates, camera orientation and any mirrored axes. Find the single root cause and fix it there. Do not stack compensating patches in several places, and check for accidental double inversion.
+CRITICAL OUTPUT FORMAT RULES:
+Output the complete updated project using the <boltArtifact> format, including all project files:
 
-Output the COMPLETE updated file inside a single ```html code block, with no explanation and no omitted sections."""
+<boltArtifact id="project-id" title="Project Name">
+<boltAction type="file" filePath="index.html">...</boltAction>
+<boltAction type="file" filePath="style.css">...</boltAction>
+<boltAction type="file" filePath="game.js">...</boltAction>
+</boltArtifact>
+
+Rules:
+- Output the COMPLETE updated files. Never omit sections or use placeholders.
+- Trace the data flow carefully to fix root causes rather than stacking temporary patches."""
 
 ERROR_SNIPPET = r"""<script>
 (function(){
@@ -100,7 +132,6 @@ ERROR_SNIPPET = r"""<script>
 })();
 </script>"""
 
-# --- Gemini Desktop / Antigravity Pure Glass Theme ---
 CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -109,19 +140,16 @@ html, body, [class*="css"] {
     font-family: 'Google Sans', 'Plus Jakarta Sans', -apple-system, sans-serif !important;
 }
 
-/* Background with deep cosmic dust */
 .stApp {
     background-color: #0b0c10 !important;
     background-image: 
         radial-gradient(circle at 50% 15%, rgba(45, 55, 110, 0.15) 0%, transparent 60%),
         radial-gradient(circle at 85% 85%, rgba(60, 30, 95, 0.12) 0%, transparent 50%),
         radial-gradient(1px 1px at 20% 30%, rgba(255, 255, 255, 0.3) 1px, transparent 1px),
-        radial-gradient(1px 1px at 75% 15%, rgba(255, 255, 255, 0.25) 1px, transparent 1px),
-        radial-gradient(1px 1px at 40% 70%, rgba(255, 255, 255, 0.2) 1px, transparent 1px) !important;
+        radial-gradient(1px 1px at 75% 15%, rgba(255, 255, 255, 0.25) 1px, transparent 1px) !important;
     color: #e3e3e8 !important;
 }
 
-/* Ensure the iPad Sidebar Opener is preserved */
 [data-testid="stHeader"] {
     background: transparent !important;
     height: 3rem !important;
@@ -148,7 +176,6 @@ footer {visibility: hidden !important;}
     border-right: 1px solid #1c1d28 !important;
 }
 
-/* Gemini Centerpiece Welcome Banner */
 .gem-hero {
     text-align: center;
     padding: 2.2rem 1rem 1.6rem 1rem;
@@ -180,68 +207,6 @@ footer {visibility: hidden !important;}
     gap: 6px;
 }
 
-/* The Floating Gemini Input Capsule */
-.gem-capsule-wrapper {
-    background: #181922;
-    border: 1px solid #2a2c3d;
-    border-radius: 28px;
-    padding: 8px 16px;
-    margin: 1.2rem auto 1.8rem auto;
-    max-width: 680px;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-
-/* Prompt Suggestions Cards */
-.gem-chips-grid {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    max-width: 640px;
-    margin: 0 auto 2rem auto;
-}
-
-.gem-chip-btn {
-    background: #12131b;
-    border: 1px solid #1f212f;
-    border-radius: 12px;
-    padding: 12px 18px;
-    text-align: left;
-    color: #c7cbd9;
-    font-size: 0.86rem;
-    transition: all 0.15s ease;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.gem-chip-btn:hover {
-    border-color: #6366f1;
-    background: #161824;
-    color: #fff;
-}
-
-.gem-chip-icon {
-    font-size: 1rem;
-    color: #818cf8;
-}
-
-/* Thinking Stream Box */
-.gem-thought-box {
-    background: #0d0e14;
-    border-left: 2px solid #818cf8;
-    border-radius: 0 8px 8px 0;
-    padding: 10px 14px;
-    margin: 10px 0;
-    font-size: 0.8rem;
-    color: #94a3b8;
-    font-family: 'JetBrains Mono', monospace;
-}
-
-/* Antigravity Header Bar */
 .ag-bar {
     display: flex;
     align-items: center;
@@ -308,7 +273,6 @@ footer {visibility: hidden !important;}
     padding: 3px 9px;
 }
 
-/* AFK Active Ribbon */
 .ag-worker-banner {
     display: flex;
     align-items: center;
@@ -338,7 +302,6 @@ footer {visibility: hidden !important;}
     50% { transform: scale(1.3); opacity: 1; }
 }
 
-/* Canvas Preview Chassis */
 .ag-chassis {
     background: #0f1016;
     border: 1px solid #1a1b24;
@@ -454,15 +417,58 @@ div[role="radiogroup"] label:has(input:checked) {
 </style>
 """
 
+# --- Bolt.diy Multi-File & Project Extraction Engine ---
+def extract_project_files(text):
+    """Extracts multiple files from <boltAction> tags or falls back to single-file HTML."""
+    files = {}
+    pattern = r'<boltAction\s+type="file"\s+filePath="([^"]+)">\n?(.*?)</boltAction>'
+    matches = re.findall(pattern, text, re.DOTALL)
+    
+    if matches:
+        for path, content in matches:
+            clean_path = path.strip().lstrip("/")
+            files[clean_path] = content.strip()
+    else:
+        # Fallback to standard Markdown ```html
+        m = re.search(r"```(?:html)?\s*\n(.*?)```", text, re.S)
+        code = m.group(1) if m else text
+        start = re.search(r"<!doctype html|<html", code, re.I)
+        if start:
+            code = code[start.start():]
+        files["index.html"] = code.strip()
 
-def extract_html(text):
-    m = re.search(r"```(?:html)?\s*\n(.*?)```", text, re.S)
-    code = m.group(1) if m else text
-    start = re.search(r"<!doctype html|<html", code, re.I)
-    if start:
-        code = code[start.start():]
-    return code.strip()
+    return files
 
+def bundle_for_preview(files):
+    """Virtually stitches modular CSS/JS files into HTML for live iframe execution."""
+    main_html = files.get("index.html")
+    if not main_html:
+        for k, v in files.items():
+            if k.endswith(".html"):
+                main_html = v
+                break
+    if not main_html:
+        return "<h3>Error: No HTML file found in project</h3>"
+
+    assembled = main_html
+    # Virtually inline local CSS and JS references so iframe can run offline
+    for name, content in files.items():
+        base = os.path.basename(name)
+        if name.endswith(".css"):
+            assembled = re.sub(rf'<link[^>]*href=["\'](\./)?{re.escape(base)}["\'][^>]*>', f'<style>\n{content}\n</style>', assembled)
+        elif name.endswith(".js") and not name.endswith(".html"):
+            assembled = re.sub(rf'<script[^>]*src=["\'](\./)?{re.escape(base)}["\'][^>]*>\s*</script>', f'<script>\n{content}\n</script>', assembled)
+
+    return inject_errors(assembled)
+
+def create_zip_bundle(files):
+    """Builds an in-memory ZIP file for one-tap download."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+    buf.seek(0)
+    return buf.getvalue()
 
 def inject_errors(html):
     m = re.search(r"<head[^>]*>", html, re.I)
@@ -570,7 +576,6 @@ class KeyPool:
                         model=model, contents=prompt, config=config
                     )
                     
-                    # Extract internal thought process if returned by SDK
                     thoughts = ""
                     try:
                         for candidate in response.candidates:
@@ -595,10 +600,7 @@ class KeyPool:
                         if overloaded >= patience:
                             self.model_down[model] = time.time() + 120
                             if no_fallback:
-                                raise RuntimeError(
-                                    f"{model} is overloaded (503). Never-fallback is enabled. "
-                                    "Use Manual Hand-off below or try again in a moment."
-                                )
+                                raise RuntimeError(f"{model} overloaded (503). Never-fallback is on.")
                             tell(f"{model} queue saturated. Falling back...")
                             break
                         delay = min(4 * 2 ** (overloaded - 1) + random.random(), 30)
@@ -659,7 +661,7 @@ class BackgroundWorker:
             "used_model": None,
             "start_time": 0,
             "elapsed_seconds": 0,
-            "result_html": None,
+            "result_raw": None,
             "thoughts": None,
             "error": None,
             "logs": [],
@@ -697,10 +699,10 @@ class BackgroundWorker:
             self.state["used_model"] = None
             self.state["start_time"] = time.time()
             self.state["elapsed_seconds"] = 0
-            self.state["result_html"] = None
+            self.state["result_raw"] = None
             self.state["thoughts"] = None
             self.state["error"] = None
-            self.state["logs"] = [f"[{time.strftime('%H:%M:%S')}] Agent started in background."]
+            self.state["logs"] = [f"[{time.strftime('%H:%M:%S')}] Agent dispatched."]
             self._save_to_disk()
 
             self.thread = threading.Thread(
@@ -713,7 +715,7 @@ class BackgroundWorker:
         with self.lock:
             self.stop_flag = True
             self.state["status_msg"] = "Aborting..."
-            self.state["logs"].append(f"[{time.strftime('%H:%M:%S')}] User requested cancellation.")
+            self.state["logs"].append(f"[{time.strftime('%H:%M:%S')}] User requested stop.")
             self._save_to_disk()
 
     def check_stop(self):
@@ -722,9 +724,9 @@ class BackgroundWorker:
 
     def _run_wrapper(self, task_fn, args):
         try:
-            res_html, used_model, note, thoughts = task_fn(self, *args)
+            res_raw, used_model, note, thoughts = task_fn(self, *args)
             with self.lock:
-                self.state["result_html"] = res_html
+                self.state["result_raw"] = res_raw
                 self.state["used_model"] = used_model
                 self.state["thoughts"] = thoughts
                 self.state["status_msg"] = f"Completed with {used_model}{note}"
@@ -742,13 +744,13 @@ class BackgroundWorker:
 
     def clear_finished(self):
         with self.lock:
-            res = self.state.get("result_html")
+            res = self.state.get("result_raw")
             thoughts = self.state.get("thoughts")
             err = self.state.get("error")
             used = self.state.get("used_model")
             task = self.state.get("task_type")
             secs = self.state.get("elapsed_seconds", 0)
-            self.state["result_html"] = None
+            self.state["result_raw"] = None
             self.state["thoughts"] = None
             self.state["error"] = None
             self.state["task_type"] = None
@@ -834,22 +836,18 @@ def say(role, text):
     st.session_state["history"].append({"role": role, "text": text})
 
 
-def autosave(html):
-    sig = (len(html), hash(html))
-    if st.session_state.get("saved_sig") == sig:
-        return
+def autosave(files):
     try:
         with open(SAVE_PATH, "w", encoding="utf-8") as f:
-            f.write(html)
+            json.dump(files, f)
         with open(SPEC_PATH, "w", encoding="utf-8") as f:
             f.write(st.session_state.get("spec", ""))
-        st.session_state["saved_sig"] = sig
     except Exception:
         pass
 
 
 def restore_last():
-    if "project_html" in st.session_state:
+    if "project_files" in st.session_state:
         return
     if st.session_state.get("restore_done"):
         return
@@ -857,20 +855,20 @@ def restore_last():
     try:
         if os.path.exists(SAVE_PATH):
             with open(SAVE_PATH, "r", encoding="utf-8") as f:
-                html = f.read()
-            if html.strip():
-                st.session_state["project_html"] = html
+                data = json.load(f)
+            if data and isinstance(data, dict):
+                st.session_state["project_files"] = data
                 st.session_state["stage"] = "built"
                 if os.path.exists(SPEC_PATH):
                     with open(SPEC_PATH, "r", encoding="utf-8") as f:
                         st.session_state["spec"] = f.read()
-                say("assistant", "Restored previous workspace from cache.")
+                say("assistant", "Restored your active multi-file workspace.")
     except Exception:
         pass
 
 
 def reset_all():
-    for k in ("spec", "project_html", "previous_html", "loaded_sig",
+    for k in ("spec", "project_files", "previous_files", "loaded_sig",
               "saved_sig", "last_used_model", "target_model", "last_thoughts"):
         st.session_state.pop(k, None)
     for p in (SAVE_PATH, SPEC_PATH, STATE_PATH):
@@ -884,8 +882,8 @@ def reset_all():
 
 
 def undo_refine():
-    if st.session_state.get("previous_html"):
-        st.session_state["project_html"] = st.session_state.pop("previous_html")
+    if st.session_state.get("previous_files"):
+        st.session_state["project_files"] = dict(st.session_state.pop("previous_files"))
         say("assistant", "Rolled back to previous code version.")
 
 
@@ -918,7 +916,7 @@ st.markdown(CSS, unsafe_allow_html=True)
 if not password_ok():
     st.stop()
 
-# Auto-migrate legacy state
+# Auto-migration for legacy state
 if "mode" not in st.session_state or st.session_state["mode"] not in PRESETS:
     st.session_state["mode"] = "High"
 
@@ -941,27 +939,29 @@ if not models:
 restore_last()
 
 # Check background task results from disk
-res, err, used, task, secs, thoughts = worker.clear_finished()
-if res:
+res_raw, err, used, task, secs, thoughts = worker.clear_finished()
+if res_raw:
     if thoughts:
         st.session_state["last_thoughts"] = thoughts
+    parsed_files = extract_project_files(res_raw)
+    
     if task == "Build":
-        st.session_state["project_html"] = extract_html(res)
+        st.session_state["project_files"] = parsed_files
         st.session_state["stage"] = "built"
         st.session_state["last_used_model"] = used
-        say("assistant", f"Synthesized in {secs:.0f}s via **{used}**. Canvas updated!")
+        say("assistant", f"Synthesized {len(parsed_files)} file(s) in {secs:.0f}s via **{used}**. Canvas updated!")
     elif task == "Refine":
-        st.session_state["previous_html"] = st.session_state.get("project_html", "")
-        st.session_state["project_html"] = extract_html(res)
+        st.session_state["previous_files"] = dict(st.session_state.get("project_files", {}))
+        st.session_state["project_files"] = parsed_files
         st.session_state["last_used_model"] = used
-        say("assistant", f"Refined in {secs:.0f}s via **{used}**. Canvas updated!")
+        say("assistant", f"Refined {len(parsed_files)} file(s) in {secs:.0f}s via **{used}**. Canvas updated!")
 elif err:
     say("assistant", f"Task aborted: {err}")
 
 # ---------------- Sidebar ----------------
 with st.sidebar:
     st.markdown('<div class="ag-title"><span class="ag-sparkle"></span>GEMINI <b>CORE</b></div>', unsafe_allow_html=True)
-    st.caption(f"{len(pool.keys)} project keys loaded | AFK Daemon Active")
+    st.caption(f"{len(pool.keys)} project keys loaded | Multi-File Engine")
     
     words = st.number_input("Spec Word Target (0 = Auto)", 0, 3000, 0, 50)
     
@@ -993,17 +993,22 @@ with st.sidebar:
     
     st.divider()
     up = st.file_uploader(
-        "Import Workspace HTML", type=["html", "htm"],
+        "Import Workspace (.html or .zip)", type=["html", "htm", "zip"],
         key=f"up_{st.session_state['up_n']}",
     )
     if up is not None:
         sig = (up.name, up.size)
         if st.session_state.get("loaded_sig") != sig:
-            st.session_state["project_html"] = up.getvalue().decode("utf-8", errors="ignore")
+            if up.name.endswith(".zip"):
+                z = zipfile.ZipFile(io.BytesIO(up.getvalue()))
+                st.session_state["project_files"] = {name: z.read(name).decode("utf-8", errors="ignore") for name in z.namelist() if not name.endswith("/")}
+            else:
+                st.session_state["project_files"] = {"index.html": up.getvalue().decode("utf-8", errors="ignore")}
             st.session_state["loaded_sig"] = sig
             st.session_state["stage"] = "built"
             say("assistant", f"Loaded `{up.name}` into canvas.")
             st.rerun()
+
     st.divider()
     with st.expander("Telemetry & Quotas"):
         st.write(pool.status())
@@ -1099,17 +1104,23 @@ if is_busy:
     time.sleep(2.5)
     st.rerun()
 
+# Helper to format files for Refine prompt
+def format_files_for_prompt(files):
+    out = []
+    for path, code in files.items():
+        out.append(f'<boltAction type="file" filePath="{path}">\n{code}\n</boltAction>')
+    return "\n".join(out)
+
 # ---------------- Stage View ----------------
 if stage == "idea":
     st.markdown(
         '<div class="gem-hero">'
         '<div class="gem-greeting">Hi, <span>what’s on your mind?</span></div>'
-        '<div class="gem-tag">✦ Gemini 3.8 Flash • Antigravity Workspace</div>'
+        '<div class="gem-tag">✦ Gemini 3.8 Flash • Bolt Multi-File Architecture</div>'
         '</div>',
         unsafe_allow_html=True,
     )
 
-    # Prompt Suggestions matching screenshot cards
     st.markdown("<b>Try building:</b>", unsafe_allow_html=True)
     c_s1, c_s2, c_s3 = st.columns(3)
     preset_prompt = None
@@ -1142,7 +1153,6 @@ if stage == "idea":
         st.rerun()
 
 else:
-    # Split view for active project (spec or built)
     user_text = st.chat_input("Refine instruction or paste console errors...", disabled=is_busy)
 
     left, right = st.columns([2, 3], gap="large")
@@ -1151,7 +1161,6 @@ else:
         st.radio("Effort", list(PRESETS), horizontal=True,
                  label_visibility="collapsed", key="mode", disabled=is_busy)
 
-        # Show captured model thinking if available
         if st.session_state.get("last_thoughts"):
             with st.expander("💭 View Model Thought Process", expanded=False):
                 st.markdown(st.session_state["last_thoughts"])
@@ -1159,14 +1168,18 @@ else:
         if user_text and user_text.strip():
             text = user_text.strip()
             say("user", text)
-            html = st.session_state.get("project_html", "")
+            files = st.session_state.get("project_files", {})
             st.session_state["target_model"] = build_chain_list[0]
+            
+            prompt_payload = (
+                f"USER REQUEST:\n{text}\n\n"
+                f"CURRENT PROJECT ARTIFACTS:\n{format_files_for_prompt(files)}"
+            )
             worker.start(
                 "Refine",
                 background_task_runner,
-                (f"REQUEST:\n{text}\n\nCURRENT CODE:\n{html}",
-                 build_chain_list, REFINE_SYSTEM, build_thinking,
-                 32000, no_fallback_refine)
+                (prompt_payload, build_chain_list, REFINE_SYSTEM,
+                 build_thinking, 32000, no_fallback_refine)
             )
             st.rerun()
 
@@ -1191,49 +1204,67 @@ else:
         if stage == "built":
             c_undo, _ = st.columns([1, 1])
             with c_undo:
-                if st.session_state.get("previous_html"):
+                if st.session_state.get("previous_files"):
                     st.button("Rollback Mutation", on_click=undo_refine, disabled=is_busy)
 
             with st.expander("Manual AI Studio Bridge"):
                 st.caption("Copy this payload directly to Google AI Studio if local queues are saturated:")
-                curr_code = st.session_state.get("project_html", "")
+                curr_files = st.session_state.get("project_files", {})
                 manual_bundle = (
                     f"{REFINE_SYSTEM}\n\n"
-                    f"CURRENT CODE:\n```html\n{curr_code}\n```\n\n"
+                    f"CURRENT PROJECT ARTIFACTS:\n{format_files_for_prompt(curr_files)}\n\n"
                     f"DIRECTIVE:\n{st.session_state['history'][-1]['text'] if st.session_state['history'] else 'Apply changes.'}\n"
                 )
                 st.code(manual_bundle, language="markdown", wrap_lines=True)
-                pasted_code = st.text_area("Paste Generated HTML Artifact", height=120)
+                pasted_code = st.text_area("Paste Generated Artifact Block (<boltArtifact>...)", height=120)
                 if st.button("Load Artifact into Canvas"):
                     if pasted_code.strip():
-                        st.session_state["previous_html"] = curr_code
-                        st.session_state["project_html"] = extract_html(pasted_code)
-                        say("assistant", "Manually injected external artifact into canvas.")
+                        st.session_state["previous_files"] = dict(curr_files)
+                        st.session_state["project_files"] = extract_project_files(pasted_code)
+                        say("assistant", "Manually injected external artifacts into workspace.")
                         st.rerun()
 
     with right:
-        html = st.session_state.get("project_html")
-        if html:
-            autosave(html)
-            if "</html>" not in html.lower():
-                st.warning("Artifact truncated. Instruct agent to complete stream.")
-            st.download_button(
-                "Export Standalone Project", data=html,
-                file_name="nexus_project.html", mime="text/html",
-            )
-            t_prev, t_code, t_spec = st.tabs(["Canvas", "Source", "Spec"])
+        files = st.session_state.get("project_files")
+        if files:
+            autosave(files)
+            assembled_html = bundle_for_preview(files)
+            
+            c_d1, c_d2 = st.columns(2)
+            with c_d1:
+                st.download_button(
+                    "📦 Download Project (.ZIP)",
+                    data=create_zip_bundle(files),
+                    file_name="nexus_project.zip",
+                    mime="application/zip",
+                    use_container_width=True
+                )
+            with c_d2:
+                st.download_button(
+                    "📄 Export Standalone HTML",
+                    data=assembled_html,
+                    file_name="nexus_project.html",
+                    mime="text/html",
+                    use_container_width=True
+                )
+
+            t_prev, t_files, t_spec = st.tabs(["Canvas Preview", "Project Files", "Spec"])
             with t_prev:
                 st.markdown(
                     '<div class="ag-chassis">'
                     '<div class="ag-controls"><span class="ag-c-red"></span><span class="ag-c-yellow"></span><span class="ag-c-green"></span></div>'
-                    '<div class="ag-chassis-title">sandbox_canvas.html</div>'
+                    f'<div class="ag-chassis-title">sandbox_virtual_bundle ({len(files)} files)</div>'
                     '<div></div>'
                     '</div>',
                     unsafe_allow_html=True,
                 )
-                components.html(inject_errors(html), height=720, scrolling=False)
-            with t_code:
-                st.code(html, language="html", wrap_lines=True)
+                components.html(assembled_html, height=720, scrolling=False)
+            with t_files:
+                selected_file = st.selectbox("Inspect File:", list(files.keys()))
+                if selected_file:
+                    ext = selected_file.split(".")[-1]
+                    lang = "javascript" if ext == "js" else ("css" if ext == "css" else "html")
+                    st.code(files[selected_file], language=lang, wrap_lines=True)
             with t_spec:
                 st.code(st.session_state.get("spec", "(no spec yet)"), language="markdown", wrap_lines=True)
         else:
