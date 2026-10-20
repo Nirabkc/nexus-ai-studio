@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 from google import genai
 from google.genai import errors, types
 
-APP_VERSION = "v12"
+APP_VERSION = "v13"
 COOLDOWN_SECONDS = 60
 SKIP_WORDS = ("image", "tts", "embed", "live", "audio", "veo",
               "imagen", "robotics", "computer", "aqa")
@@ -23,17 +23,17 @@ PRESETS = {
     "Turbo": {
         "chain": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
         "thinking": "low",
-        "desc": "Ultra-fast execution with lightweight reasoning passes.",
+        "desc": "Fastest answers & rapid drafting.",
     },
     "High": {
         "chain": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
         "thinking": "low",
-        "desc": "Antigravity standard. Uses gemini-3.8-flash with automatic model fallback.",
+        "desc": "All-around help & complex builds (Recommended).",
     },
     "Deep": {
         "chain": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
         "thinking": "high",
-        "desc": "Maximum latent reasoning. Slowest, highest-fidelity outputs.",
+        "desc": "Advanced reasoning & deep multi-pass logic.",
     },
 }
 SPEC_CHAIN = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash"]
@@ -100,67 +100,175 @@ ERROR_SNIPPET = r"""<script>
 })();
 </script>"""
 
+# --- Gemini Desktop / Antigravity Pure Glass Theme ---
 CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 html, body, [class*="css"] {
-    font-family: 'Plus Jakarta Sans', -apple-system, sans-serif !important;
+    font-family: 'Google Sans', 'Plus Jakarta Sans', -apple-system, sans-serif !important;
 }
 
+/* Background with deep cosmic dust */
 .stApp {
-    background-color: #08080a !important;
+    background-color: #0b0c10 !important;
     background-image: 
-        radial-gradient(at 0% 0%, rgba(30, 27, 75, 0.18) 0px, transparent 50%),
-        radial-gradient(at 100% 100%, rgba(15, 23, 42, 0.25) 0px, transparent 50%) !important;
-    color: #e2e2e8 !important;
+        radial-gradient(circle at 50% 15%, rgba(45, 55, 110, 0.15) 0%, transparent 60%),
+        radial-gradient(circle at 85% 85%, rgba(60, 30, 95, 0.12) 0%, transparent 50%),
+        radial-gradient(1px 1px at 20% 30%, rgba(255, 255, 255, 0.3) 1px, transparent 1px),
+        radial-gradient(1px 1px at 75% 15%, rgba(255, 255, 255, 0.25) 1px, transparent 1px),
+        radial-gradient(1px 1px at 40% 70%, rgba(255, 255, 255, 0.2) 1px, transparent 1px) !important;
+    color: #e3e3e8 !important;
 }
 
-[data-testid="stHeader"] {display: none !important;}
+/* Ensure the iPad Sidebar Opener is preserved */
+[data-testid="stHeader"] {
+    background: transparent !important;
+    height: 3rem !important;
+}
+
+[data-testid="stSidebarCollapseButton"] {
+    background: #161720 !important;
+    border: 1px solid #282a3d !important;
+    border-radius: 8px !important;
+    color: #a5b4fc !important;
+    box-shadow: 0 0 10px rgba(99, 102, 241, 0.2) !important;
+}
+
 footer {visibility: hidden !important;}
 
 .block-container {
-    padding-top: 1.2rem !important;
-    padding-bottom: 4rem !important;
-    max-width: 98% !important;
+    padding-top: 1.5rem !important;
+    padding-bottom: 5rem !important;
+    max-width: 96% !important;
 }
 
 [data-testid="stSidebar"] {
-    background-color: #0c0d12 !important;
-    border-right: 1px solid #1a1b24 !important;
+    background-color: #0f1016 !important;
+    border-right: 1px solid #1c1d28 !important;
 }
 
-.ag-header {
+/* Gemini Centerpiece Welcome Banner */
+.gem-hero {
+    text-align: center;
+    padding: 2.2rem 1rem 1.6rem 1rem;
+}
+
+.gem-greeting {
+    font-size: 2.1rem;
+    font-weight: 500;
+    color: #f1f2f6;
+    letter-spacing: -0.02em;
+    margin-bottom: 0.8rem;
+}
+
+.gem-greeting span {
+    background: linear-gradient(135deg, #a5b4fc, #c084fc);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.gem-tag {
+    font-size: 0.76rem;
+    color: #8b8f9f;
+    background: #171822;
+    border: 1px solid #232534;
+    border-radius: 999px;
+    padding: 4px 14px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* The Floating Gemini Input Capsule */
+.gem-capsule-wrapper {
+    background: #181922;
+    border: 1px solid #2a2c3d;
+    border-radius: 28px;
+    padding: 8px 16px;
+    margin: 1.2rem auto 1.8rem auto;
+    max-width: 680px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    flex-wrap: wrap;
-    padding: 6px 4px 14px 4px;
-    margin-bottom: 14px;
-    border-bottom: 1px solid #181922;
 }
 
-.ag-logo {
+/* Prompt Suggestions Cards */
+.gem-chips-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 640px;
+    margin: 0 auto 2rem auto;
+}
+
+.gem-chip-btn {
+    background: #12131b;
+    border: 1px solid #1f212f;
+    border-radius: 12px;
+    padding: 12px 18px;
+    text-align: left;
+    color: #c7cbd9;
+    font-size: 0.86rem;
+    transition: all 0.15s ease;
+    cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 9px;
-    font-size: 0.95rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    color: #f1f1f5;
-    text-transform: uppercase;
+    gap: 12px;
 }
 
-.ag-logo span {
+.gem-chip-btn:hover {
+    border-color: #6366f1;
+    background: #161824;
+    color: #fff;
+}
+
+.gem-chip-icon {
+    font-size: 1rem;
     color: #818cf8;
 }
 
-.ag-glyph {
+/* Thinking Stream Box */
+.gem-thought-box {
+    background: #0d0e14;
+    border-left: 2px solid #818cf8;
+    border-radius: 0 8px 8px 0;
+    padding: 10px 14px;
+    margin: 10px 0;
+    font-size: 0.8rem;
+    color: #94a3b8;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* Antigravity Header Bar */
+.ag-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 4px 12px 4px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid #161720;
+}
+
+.ag-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: #f1f2f6;
+}
+
+.ag-title b { color: #818cf8; }
+
+.ag-sparkle {
     width: 14px;
     height: 14px;
-    background: linear-gradient(135deg, #6366f1, #a855f7);
+    background: linear-gradient(135deg, #6366f1, #c084fc);
     border-radius: 3px;
-    box-shadow: 0 0 10px rgba(99, 102, 241, 0.6);
+    box-shadow: 0 0 10px #6366f1;
 }
 
 .ag-badges {
@@ -170,64 +278,59 @@ footer {visibility: hidden !important;}
     flex-wrap: wrap;
 }
 
-.ag-pill {
+.ag-badge {
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.72rem;
     color: #94a3b8;
-    background: #111218;
-    border: 1px solid #1e202c;
+    background: #14151e;
+    border: 1px solid #232534;
     border-radius: 6px;
     padding: 3px 9px;
 }
 
-.ag-pill-active {
+.ag-badge-active {
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.72rem;
     color: #a5b4fc;
-    background: #141624;
-    border: 1px solid #312e81;
+    background: #161829;
+    border: 1px solid #3730a3;
     border-radius: 6px;
     padding: 3px 9px;
 }
 
-.ag-pill-fallback {
+.ag-badge-fallback {
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.72rem;
     color: #fbbf24;
-    background: #1c1911;
-    border: 1px solid #453412;
+    background: #1c1810;
+    border: 1px solid #5a4214;
     border-radius: 6px;
     padding: 3px 9px;
 }
 
+/* AFK Active Ribbon */
 .ag-worker-banner {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    background: #0f1017;
-    border: 1px solid #282a3d;
-    border-left: 3px solid #6366f1;
+    background: #12131c;
+    border: 1px solid #26283b;
+    border-left: 3px solid #818cf8;
     border-radius: 8px;
     padding: 10px 14px;
     margin-bottom: 14px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
 }
 
-.ag-worker-left {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 0.84rem;
-    color: #e2e8f0;
-}
-
 .ag-pulse-dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #6366f1;
-    box-shadow: 0 0 8px #6366f1;
+    background: #818cf8;
+    box-shadow: 0 0 8px #818cf8;
     animation: ag-pulse 1.4s infinite ease-in-out;
+    display: inline-block;
+    margin-right: 8px;
 }
 
 @keyframes ag-pulse {
@@ -235,8 +338,9 @@ footer {visibility: hidden !important;}
     50% { transform: scale(1.3); opacity: 1; }
 }
 
+/* Canvas Preview Chassis */
 .ag-chassis {
-    background: #0e0f14;
+    background: #0f1016;
     border: 1px solid #1a1b24;
     border-bottom: none;
     border-radius: 8px 8px 0 0;
@@ -263,7 +367,7 @@ footer {visibility: hidden !important;}
 .ag-c-yellow { background: #f59e0b; }
 .ag-c-green { background: #10b981; }
 
-.ag-title {
+.ag-chassis-title {
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.72rem;
     color: #64748b;
@@ -276,61 +380,55 @@ iframe {
 }
 
 [data-testid="stChatMessage"] {
-    background: #0d0e14 !important;
-    border: 1px solid #181924 !important;
-    border-radius: 8px !important;
+    background: #11121a !important;
+    border: 1px solid #1c1e2b !important;
+    border-radius: 12px !important;
 }
 
 [data-testid="stChatInput"] {
-    background-color: #0e0f15 !important;
-    border: 1px solid #222330 !important;
-    border-radius: 8px !important;
+    background-color: #14151e !important;
+    border: 1px solid #26283b !important;
+    border-radius: 20px !important;
 }
 
 .stButton > button, .stDownloadButton > button {
-    background: #12131b !important;
-    border: 1px solid #232534 !important;
+    background: #14151e !important;
+    border: 1px solid #232536 !important;
     color: #cbd5e1 !important;
-    border-radius: 6px !important;
+    border-radius: 8px !important;
     font-weight: 500 !important;
-    font-size: 0.82rem !important;
-    transition: all 0.15s ease !important;
 }
 
 .stButton > button:hover, .stDownloadButton > button:hover {
-    border-color: #4f46e5 !important;
+    border-color: #6366f1 !important;
     color: #ffffff !important;
 }
 
 .stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, #4f46e5, #7c3aed) !important;
+    background: linear-gradient(135deg, #4f46e5, #9333ea) !important;
     border: none !important;
     color: #ffffff !important;
     font-weight: 600 !important;
-    box-shadow: 0 0 14px rgba(99, 102, 241, 0.3) !important;
-}
-
-div[role="radiogroup"] {
-    gap: 6px !important;
+    box-shadow: 0 0 14px rgba(99, 102, 241, 0.35) !important;
 }
 
 div[role="radiogroup"] label {
-    background: #111218 !important;
-    border: 1px solid #1c1d28 !important;
-    border-radius: 6px !important;
-    padding: 3px 14px !important;
+    background: #12131b !important;
+    border: 1px solid #1f212f !important;
+    border-radius: 8px !important;
+    padding: 4px 14px !important;
     font-size: 0.8rem !important;
 }
 
 div[role="radiogroup"] label:has(input:checked) {
-    background: #181a29 !important;
-    border-color: #4f46e5 !important;
+    background: #1e1b4b !important;
+    border-color: #6366f1 !important;
     color: #c7d2fe !important;
 }
 
 .stTabs [data-baseweb="tab-list"] {
     gap: 4px !important;
-    border-bottom: 1px solid #181924 !important;
+    border-bottom: 1px solid #1a1b26 !important;
 }
 
 .stTabs [data-baseweb="tab"] {
@@ -342,15 +440,15 @@ div[role="radiogroup"] label:has(input:checked) {
 
 .stTabs [aria-selected="true"] {
     color: #f1f5f9 !important;
-    border-bottom: 2px solid #6366f1 !important;
-    background: #0f1017 !important;
+    border-bottom: 2px solid #818cf8 !important;
+    background: #12131c !important;
 }
 
 [data-testid="stCode"] pre, code {
     font-family: 'JetBrains Mono', monospace !important;
-    background-color: #0b0c10 !important;
-    border: 1px solid #181924 !important;
-    border-radius: 6px !important;
+    background-color: #0d0e14 !important;
+    border: 1px solid #1a1b26 !important;
+    border-radius: 8px !important;
     font-size: 0.78rem !important;
 }
 </style>
@@ -471,8 +569,20 @@ class KeyPool:
                     response = client.models.generate_content(
                         model=model, contents=prompt, config=config
                     )
+                    
+                    # Extract internal thought process if returned by SDK
+                    thoughts = ""
+                    try:
+                        for candidate in response.candidates:
+                            for part in candidate.content.parts:
+                                if getattr(part, "thought", False):
+                                    thoughts += (part.text or "") + "\n"
+                    except Exception:
+                        pass
+
                     log.append(f"{model} key {i+1}: OK in {time.time()-t0:.1f}s")
-                    return (response.text or ""), model, i + 1, log
+                    return (response.text or ""), model, i + 1, log, thoughts
+
                 except errors.APIError as e:
                     code = e.code
                     log.append(f"{model} key {i+1}: error {code}")
@@ -489,10 +599,10 @@ class KeyPool:
                                     f"{model} is overloaded (503). Never-fallback is enabled. "
                                     "Use Manual Hand-off below or try again in a moment."
                                 )
-                            tell(f"{model} capacity reached. Shifting to next model...")
+                            tell(f"{model} queue saturated. Falling back...")
                             break
                         delay = min(4 * 2 ** (overloaded - 1) + random.random(), 30)
-                        tell(f"{model} queue saturated ({code}). Retry {overloaded}/{patience} in {delay:.0f}s...")
+                        tell(f"{model} busy ({code}). Attempt {overloaded}/{patience}. Retry in {delay:.0f}s...")
                         time.sleep(delay)
                     elif code == 429:
                         limited += 1
@@ -500,9 +610,7 @@ class KeyPool:
                         if limited >= len(self.keys):
                             self.model_down[model] = time.time() + 300
                             if no_fallback:
-                                raise RuntimeError(
-                                    f"{model} rate limits exhausted on all keys."
-                                )
+                                raise RuntimeError(f"{model} rate limits exhausted on all keys.")
                             tell(f"{model} rate limited across pool. Fallback triggered...")
                             break
                     elif code in (401, 403):
@@ -535,7 +643,7 @@ class KeyPool:
         for m, t in self.model_down.items():
             if t > now:
                 out.append(f"{m}: paused {int(t-now)}s")
-        return out or ["All models & keys nominal"]
+        return out or ["All keys nominal"]
 
 
 class BackgroundWorker:
@@ -552,6 +660,7 @@ class BackgroundWorker:
             "start_time": 0,
             "elapsed_seconds": 0,
             "result_html": None,
+            "thoughts": None,
             "error": None,
             "logs": [],
         }
@@ -582,13 +691,14 @@ class BackgroundWorker:
                 return False
             self.stop_flag = False
             self.state["running"] = True
-            self.state["status_msg"] = f"Dispatching {task_type}..."
+            self.state["status_msg"] = f"Synthesizing {task_type}..."
             self.state["task_type"] = task_type
             self.state["target_model"] = args[1][0] if len(args) > 1 and args[1] else "AI"
             self.state["used_model"] = None
             self.state["start_time"] = time.time()
             self.state["elapsed_seconds"] = 0
             self.state["result_html"] = None
+            self.state["thoughts"] = None
             self.state["error"] = None
             self.state["logs"] = [f"[{time.strftime('%H:%M:%S')}] Agent started in background."]
             self._save_to_disk()
@@ -612,12 +722,13 @@ class BackgroundWorker:
 
     def _run_wrapper(self, task_fn, args):
         try:
-            res_html, used_model, note = task_fn(self, *args)
+            res_html, used_model, note, thoughts = task_fn(self, *args)
             with self.lock:
                 self.state["result_html"] = res_html
                 self.state["used_model"] = used_model
+                self.state["thoughts"] = thoughts
                 self.state["status_msg"] = f"Completed with {used_model}{note}"
-                self.state["logs"].append(f"[{time.strftime('%H:%M:%S')}] Done: {used_model}.")
+                self.state["logs"].append(f"[{time.strftime('%H:%M:%S')}] Completed via {used_model}.")
         except Exception as e:
             with self.lock:
                 self.state["error"] = str(e)
@@ -632,15 +743,17 @@ class BackgroundWorker:
     def clear_finished(self):
         with self.lock:
             res = self.state.get("result_html")
+            thoughts = self.state.get("thoughts")
             err = self.state.get("error")
             used = self.state.get("used_model")
             task = self.state.get("task_type")
             secs = self.state.get("elapsed_seconds", 0)
             self.state["result_html"] = None
+            self.state["thoughts"] = None
             self.state["error"] = None
             self.state["task_type"] = None
             self._save_to_disk()
-            return res, err, used, task, secs
+            return res, err, used, task, secs, thoughts
 
     def _save_to_disk(self):
         try:
@@ -702,7 +815,7 @@ def make_spec(pool, chain, idea, words, notify=None):
         length = f"Write the prompt at about {words} words."
     else:
         length = "Choose the length that fits the project's complexity."
-    text, _, _, _ = pool.generate(
+    text, _, _, _, _ = pool.generate(
         f"Idea: {idea}\n\n{length}", chain,
         system=FACTORY_SYSTEM, thinking="low", notify=notify,
     )
@@ -713,8 +826,7 @@ def make_spec(pool, chain, idea, words, notify=None):
             f"(it is currently {count}). Keep every essential requirement. "
             f"Output only the prompt.\n\n{text}"
         )
-        text, _, _, _ = pool.generate(fix, chain, thinking="low",
-                                      notify=notify)
+        text, _, _, _, _ = pool.generate(fix, chain, thinking="low", notify=notify)
     return text.strip()
 
 
@@ -752,14 +864,14 @@ def restore_last():
                 if os.path.exists(SPEC_PATH):
                     with open(SPEC_PATH, "r", encoding="utf-8") as f:
                         st.session_state["spec"] = f.read()
-                say("assistant", "Restored your last active workspace from disk.")
+                say("assistant", "Restored previous workspace from cache.")
     except Exception:
         pass
 
 
 def reset_all():
     for k in ("spec", "project_html", "previous_html", "loaded_sig",
-              "saved_sig", "last_used_model", "target_model"):
+              "saved_sig", "last_used_model", "target_model", "last_thoughts"):
         st.session_state.pop(k, None)
     for p in (SAVE_PATH, SPEC_PATH, STATE_PATH):
         try:
@@ -788,7 +900,7 @@ def password_ok():
     pw = get_password()
     if not pw or st.session_state.get("authed"):
         return True
-    st.markdown('<div class="ag-logo"><span class="ag-glyph"></span>ANTIGRAVITY <span>STUDIO</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="ag-title"><span class="ag-sparkle"></span>GEMINI <b>ANTIGRAVITY</b></div>', unsafe_allow_html=True)
     entered = st.text_input("Access Key", type="password")
     if entered:
         if hmac.compare_digest(entered.encode(), pw.encode()):
@@ -799,19 +911,16 @@ def password_ok():
     return False
 
 
-st.set_page_config(page_title="Antigravity Studio", layout="wide",
+st.set_page_config(page_title="Gemini Antigravity", layout="wide",
                    initial_sidebar_state="collapsed")
 st.markdown(CSS, unsafe_allow_html=True)
 
 if not password_ok():
     st.stop()
 
-# --- Auto-migration for legacy session state ---
+# Auto-migrate legacy state
 if "mode" not in st.session_state or st.session_state["mode"] not in PRESETS:
-    if st.session_state.get("mode") == "Fast":
-        st.session_state["mode"] = "Turbo"
-    else:
-        st.session_state["mode"] = "High"
+    st.session_state["mode"] = "High"
 
 st.session_state.setdefault("stage", "idea")
 st.session_state.setdefault("history", [])
@@ -821,53 +930,53 @@ pool = get_pool(APP_VERSION)
 worker = get_worker(APP_VERSION)
 
 if not pool.keys:
-    st.warning("No API keys configured.")
+    st.warning("No API keys found.")
     st.stop()
 
 models = get_models(APP_VERSION)
 if not models:
-    st.error("Model endpoints unavailable. Check API keys.")
+    st.error("Endpoints unavailable. Check API keys.")
     st.stop()
 
 restore_last()
 
 # Check background task results from disk
-res, err, used, task, secs = worker.clear_finished()
+res, err, used, task, secs, thoughts = worker.clear_finished()
 if res:
+    if thoughts:
+        st.session_state["last_thoughts"] = thoughts
     if task == "Build":
         st.session_state["project_html"] = extract_html(res)
         st.session_state["stage"] = "built"
         st.session_state["last_used_model"] = used
-        say("assistant", f"Synthesized in {secs:.0f}s via **{used}**. Preview updated.")
+        say("assistant", f"Synthesized in {secs:.0f}s via **{used}**. Canvas updated!")
     elif task == "Refine":
         st.session_state["previous_html"] = st.session_state.get("project_html", "")
         st.session_state["project_html"] = extract_html(res)
         st.session_state["last_used_model"] = used
-        say("assistant", f"Refined in {secs:.0f}s via **{used}**. Tested & verified.")
+        say("assistant", f"Refined in {secs:.0f}s via **{used}**. Canvas updated!")
 elif err:
     say("assistant", f"Task aborted: {err}")
 
 # ---------------- Sidebar ----------------
 with st.sidebar:
-    st.markdown('<div class="ag-logo"><span class="ag-glyph"></span>ANTIGRAVITY <span>CORE</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="ag-title"><span class="ag-sparkle"></span>GEMINI <b>CORE</b></div>', unsafe_allow_html=True)
     st.caption(f"{len(pool.keys)} project keys loaded | AFK Daemon Active")
     
     words = st.number_input("Spec Word Target (0 = Auto)", 0, 3000, 0, 50)
     
     st.divider()
-    st.markdown("<b>Agent Configuration</b>", unsafe_allow_html=True)
+    st.markdown("<b>Execution Settings</b>", unsafe_allow_html=True)
     patience_choice = st.radio(
         "Model Patience",
         ["Quick (Fast Fallback)", "Patient (Hold for 3.8)"],
         index=0,
-        help="Patient retries gemini-3.8-flash for up to 2m before falling back."
     )
     patience_val = 6 if "Patient" in patience_choice else 3
 
     no_fallback_refine = st.toggle(
         "Lock Refine to Primary Model",
         value=True,
-        help="Prevents smaller fallback models from modifying complex 3.8 codebases."
     )
 
     manual = st.toggle("Override Model Endpoints")
@@ -893,7 +1002,7 @@ with st.sidebar:
             st.session_state["project_html"] = up.getvalue().decode("utf-8", errors="ignore")
             st.session_state["loaded_sig"] = sig
             st.session_state["stage"] = "built"
-            say("assistant", f"Loaded `{up.name}` into active workspace.")
+            say("assistant", f"Loaded `{up.name}` into canvas.")
             st.rerun()
     st.divider()
     with st.expander("Telemetry & Quotas"):
@@ -930,7 +1039,7 @@ stage = st.session_state["stage"]
 def background_task_runner(w_inst, prompt, chain, system, thinking, max_tokens, no_fallback):
     target = chain[0]
     w_inst.log(f"Synthesizing via {target}...")
-    text, used, _, _ = pool.generate(
+    text, used, _, _, thoughts = pool.generate(
         prompt, chain, system=system, thinking=thinking,
         max_tokens=max_tokens, notify=lambda m: w_inst.log(m),
         patience=patience_val, no_fallback=no_fallback,
@@ -939,90 +1048,116 @@ def background_task_runner(w_inst, prompt, chain, system, thinking, max_tokens, 
     note = ""
     if used != target:
         note = f" (fallback: {used})"
-    return text, used, note
+    return text, used, note, thoughts
 
 
-# ---------------- Antigravity Top Header ----------------
+# ---------------- Top Bar ----------------
 last_model = st.session_state.get("last_used_model")
 target_model = st.session_state.get("target_model")
 
 chip_badge = ""
 if last_model and target_model:
     if last_model == target_model:
-        chip_badge = f'<span class="ag-pill-active">● {last_model}</span>'
+        chip_badge = f'<span class="ag-badge-active">● {last_model}</span>'
     else:
-        chip_badge = f'<span class="ag-pill-fallback">▲ {last_model}</span>'
+        chip_badge = f'<span class="ag-badge-fallback">▲ {last_model}</span>'
 else:
-    chip_badge = f'<span class="ag-pill">● {build_chain_list[0]}</span>'
+    chip_badge = f'<span class="ag-badge">● {build_chain_list[0]}</span>'
 
 st.markdown(
-    '<div class="ag-header">'
-    '<div class="ag-logo"><span class="ag-glyph"></span>ANTIGRAVITY <span>STUDIO</span></div>'
+    '<div class="ag-bar">'
+    '<div class="ag-title"><span class="ag-sparkle"></span>GEMINI <b>ANTIGRAVITY</b></div>'
     '<div class="ag-badges">'
-    f'<span class="ag-pill">{mode.upper()} EFFORT</span>'
+    f'<span class="ag-badge">{mode.upper()} EFFORT</span>'
     f'{chip_badge}'
-    f'<span class="ag-pill">{len(pool.keys)} KEYS ACTIVE</span>'
+    f'<span class="ag-badge">{len(pool.keys)} KEYS ACTIVE</span>'
     '</div></div>',
     unsafe_allow_html=True,
 )
 
-# ---------------- Antigravity Agent Status Ribbon ----------------
+# ---------------- AFK Worker Status Ribbon ----------------
 snap = worker.get_snapshot()
 is_busy = snap["running"]
 
 if is_busy:
     st.markdown(
         f'<div class="ag-worker-banner">'
-        f'<div class="ag-worker-left">'
-        f'<span class="ag-pulse-dot"></span>'
-        f'<b>AGENT WORKING:</b> {snap["status_msg"]} '
-        f'<span style="color:#818cf8; font-family:monospace;">[{int(snap["elapsed_seconds"])}s]</span>'
-        f'</div></div>',
+        f'<div><span class="ag-pulse-dot"></span><b>AGENT ACTIVE:</b> {snap["status_msg"]} '
+        f'<span style="color:#818cf8; font-family:monospace;">[{int(snap["elapsed_seconds"])}s]</span></div>'
+        f'</div>',
         unsafe_allow_html=True,
     )
     col_c1, col_c2 = st.columns([5, 1])
     with col_c1:
-        with st.expander("Inspect Agent Operations (Safe to sleep iPad)", expanded=False):
+        with st.expander("Live Task Operations", expanded=False):
             st.code("\n".join(snap["logs"]), language="text")
     with col_c2:
-        if st.button("Abort Task"):
+        if st.button("Abort"):
             worker.stop()
             st.rerun()
 
     time.sleep(2.5)
     st.rerun()
 
-placeholder = (
-    "Refine instruction or paste console errors..."
-    if stage == "built" else "Ask anything, specify an idea to build..."
-)
-user_text = st.chat_input(placeholder, disabled=is_busy)
+# ---------------- Stage View ----------------
+if stage == "idea":
+    st.markdown(
+        '<div class="gem-hero">'
+        '<div class="gem-greeting">Hi, <span>what’s on your mind?</span></div>'
+        '<div class="gem-tag">✦ Gemini 3.8 Flash • Antigravity Workspace</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
-left, right = st.columns([2, 3], gap="large")
+    # Prompt Suggestions matching screenshot cards
+    st.markdown("<b>Try building:</b>", unsafe_allow_html=True)
+    c_s1, c_s2, c_s3 = st.columns(3)
+    preset_prompt = None
+    with c_s1:
+        if st.button("✎ 3D Voxel Sandbox\nWith dynamic water shaders", use_container_width=True):
+            preset_prompt = "Build a 3D Minecraft voxel clone with Three.js, procedural terrain, and dynamic water shaders."
+    with c_s2:
+        if st.button("⚡ Neon Dash 3D\nFast lane runner with audio", use_container_width=True):
+            preset_prompt = "Build a 3D Neon Dash runner game with procedural obstacles, touch controls, and Web Audio synth."
+    with c_s3:
+        if st.button("🎮 2D Retro Terraria\nSide-scroller canvas mining", use_container_width=True):
+            preset_prompt = "Build a 2D Terraria-style platformer sandbox with block breaking, inventory, and dynamic water."
 
-with left:
-    st.radio("Effort", list(PRESETS), horizontal=True,
-             label_visibility="collapsed", key="mode", disabled=is_busy)
-    st.caption(PRESETS[st.session_state["mode"]]["desc"])
+    user_text = st.chat_input("Ask Gemini, specify an idea to build...", disabled=is_busy)
+    if preset_prompt:
+        user_text = preset_prompt
 
     if user_text and user_text.strip():
         text = user_text.strip()
-        if stage in ("idea", "spec"):
-            say("user", text)
-            ph = st.empty()
-            try:
-                ph.caption(f"Architecting build specification with {spec_chain[0]}...")
-                spec = make_spec(pool, spec_chain, text, int(words),
-                                 notify=lambda m: ph.caption(m))
-                st.session_state["spec"] = spec
-                st.session_state["stage"] = "spec"
-                say("assistant",
-                    f"Specification mapped ({len(spec.split())} words). "
-                    "Review below and trigger **Synthesize Project**.")
-            except Exception as e:
-                say("assistant", f"Error: {e}")
-            st.rerun()
-        else:
+        say("user", text)
+        ph = st.empty()
+        try:
+            ph.caption(f"Synthesizing specification with {spec_chain[0]}...")
+            spec = make_spec(pool, spec_chain, text, int(words), notify=lambda m: ph.caption(m))
+            st.session_state["spec"] = spec
+            st.session_state["stage"] = "spec"
+            say("assistant", f"Specification ready ({len(spec.split())} words). Review below and trigger **Synthesize**.")
+        except Exception as e:
+            say("assistant", f"Error: {e}")
+        st.rerun()
+
+else:
+    # Split view for active project (spec or built)
+    user_text = st.chat_input("Refine instruction or paste console errors...", disabled=is_busy)
+
+    left, right = st.columns([2, 3], gap="large")
+
+    with left:
+        st.radio("Effort", list(PRESETS), horizontal=True,
+                 label_visibility="collapsed", key="mode", disabled=is_busy)
+
+        # Show captured model thinking if available
+        if st.session_state.get("last_thoughts"):
+            with st.expander("💭 View Model Thought Process", expanded=False):
+                st.markdown(st.session_state["last_thoughts"])
+
+        if user_text and user_text.strip():
+            text = user_text.strip()
             say("user", text)
             html = st.session_state.get("project_html", "")
             st.session_state["target_model"] = build_chain_list[0]
@@ -1035,85 +1170,82 @@ with left:
             )
             st.rerun()
 
-    if not st.session_state["history"]:
-        st.info("Input a project directive below to initialize workspace.")
+        for msg in st.session_state["history"]:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["text"])
 
-    for msg in st.session_state["history"]:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["text"])
+        if stage == "spec":
+            st.text_area("Build Specification", key="spec", height=280)
+            with st.expander("Inspect Specification Markdown"):
+                st.code(st.session_state.get("spec", ""), language="markdown", wrap_lines=True)
+            if st.button("Synthesize Project", type="primary", use_container_width=True, disabled=is_busy):
+                st.session_state["target_model"] = build_chain_list[0]
+                worker.start(
+                    "Build",
+                    background_task_runner,
+                    (st.session_state["spec"], build_chain_list,
+                     BUILDER_SYSTEM, build_thinking, 32000, False)
+                )
+                st.rerun()
 
-    if stage == "spec":
-        st.text_area("Build Specification", key="spec", height=280)
-        with st.expander("Inspect Specification Markdown"):
-            st.code(st.session_state.get("spec", ""), language="markdown", wrap_lines=True)
-        if st.button("Synthesize Project", type="primary", use_container_width=True, disabled=is_busy):
-            st.session_state["target_model"] = build_chain_list[0]
-            worker.start(
-                "Build",
-                background_task_runner,
-                (st.session_state["spec"], build_chain_list,
-                 BUILDER_SYSTEM, build_thinking, 32000, False)
+        if stage == "built":
+            c_undo, _ = st.columns([1, 1])
+            with c_undo:
+                if st.session_state.get("previous_html"):
+                    st.button("Rollback Mutation", on_click=undo_refine, disabled=is_busy)
+
+            with st.expander("Manual AI Studio Bridge"):
+                st.caption("Copy this payload directly to Google AI Studio if local queues are saturated:")
+                curr_code = st.session_state.get("project_html", "")
+                manual_bundle = (
+                    f"{REFINE_SYSTEM}\n\n"
+                    f"CURRENT CODE:\n```html\n{curr_code}\n```\n\n"
+                    f"DIRECTIVE:\n{st.session_state['history'][-1]['text'] if st.session_state['history'] else 'Apply changes.'}\n"
+                )
+                st.code(manual_bundle, language="markdown", wrap_lines=True)
+                pasted_code = st.text_area("Paste Generated HTML Artifact", height=120)
+                if st.button("Load Artifact into Canvas"):
+                    if pasted_code.strip():
+                        st.session_state["previous_html"] = curr_code
+                        st.session_state["project_html"] = extract_html(pasted_code)
+                        say("assistant", "Manually injected external artifact into canvas.")
+                        st.rerun()
+
+    with right:
+        html = st.session_state.get("project_html")
+        if html:
+            autosave(html)
+            if "</html>" not in html.lower():
+                st.warning("Artifact truncated. Instruct agent to complete stream.")
+            st.download_button(
+                "Export Standalone Project", data=html,
+                file_name="nexus_project.html", mime="text/html",
             )
-            st.rerun()
-
-    if stage == "built":
-        c_undo, _ = st.columns([1, 1])
-        with c_undo:
-            if st.session_state.get("previous_html"):
-                st.button("Rollback Last Mutation", on_click=undo_refine, disabled=is_busy)
-
-        with st.expander("Manual AI Studio Bridge"):
-            st.caption("Copy this payload directly to Google AI Studio if local queues are saturated:")
-            curr_code = st.session_state.get("project_html", "")
-            manual_bundle = (
-                f"{REFINE_SYSTEM}\n\n"
-                f"CURRENT CODE:\n```html\n{curr_code}\n```\n\n"
-                f"DIRECTIVE:\n{st.session_state['history'][-1]['text'] if st.session_state['history'] else 'Apply changes.'}\n"
-            )
-            st.code(manual_bundle, language="markdown", wrap_lines=True)
-            pasted_code = st.text_area("Paste Generated HTML Artifact", height=120)
-            if st.button("Load Artifact into Canvas"):
-                if pasted_code.strip():
-                    st.session_state["previous_html"] = curr_code
-                    st.session_state["project_html"] = extract_html(pasted_code)
-                    say("assistant", "Manually injected external artifact into canvas.")
-                    st.rerun()
-
-with right:
-    html = st.session_state.get("project_html")
-    if html:
-        autosave(html)
-        if "</html>" not in html.lower():
-            st.warning("Artifact generation truncated. Instruct agent to complete stream.")
-        st.download_button(
-            "Export Standalone Project", data=html,
-            file_name="nexus_project.html", mime="text/html",
-        )
-        t_prev, t_code, t_spec = st.tabs(["Canvas", "Source", "Spec"])
-        with t_prev:
+            t_prev, t_code, t_spec = st.tabs(["Canvas", "Source", "Spec"])
+            with t_prev:
+                st.markdown(
+                    '<div class="ag-chassis">'
+                    '<div class="ag-controls"><span class="ag-c-red"></span><span class="ag-c-yellow"></span><span class="ag-c-green"></span></div>'
+                    '<div class="ag-chassis-title">sandbox_canvas.html</div>'
+                    '<div></div>'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+                components.html(inject_errors(html), height=720, scrolling=False)
+            with t_code:
+                st.code(html, language="html", wrap_lines=True)
+            with t_spec:
+                st.code(st.session_state.get("spec", "(no spec yet)"), language="markdown", wrap_lines=True)
+        else:
             st.markdown(
                 '<div class="ag-chassis">'
                 '<div class="ag-controls"><span class="ag-c-red"></span><span class="ag-c-yellow"></span><span class="ag-c-green"></span></div>'
-                '<div class="ag-title">sandbox_canvas.html</div>'
+                '<div class="ag-chassis-title">sandbox_idle</div>'
                 '<div></div>'
+                '</div>'
+                '<div style="border: 1px solid #1a1b24; border-radius: 0 0 8px 8px; background: #0c0d14; padding: 6rem 1rem; text-align: center; color: #475569;">'
+                '<h3>CANVAS IDLE</h3>'
+                'Awaiting agent build output.'
                 '</div>',
                 unsafe_allow_html=True,
             )
-            components.html(inject_errors(html), height=720, scrolling=False)
-        with t_code:
-            st.code(html, language="html", wrap_lines=True)
-        with t_spec:
-            st.code(st.session_state.get("spec", "(no spec yet)"), language="markdown", wrap_lines=True)
-    else:
-        st.markdown(
-            '<div class="ag-chassis">'
-            '<div class="ag-controls"><span class="ag-c-red"></span><span class="ag-c-yellow"></span><span class="ag-c-green"></span></div>'
-            '<div class="ag-title">sandbox_idle</div>'
-            '<div></div>'
-            '</div>'
-            '<div class="nx-empty" style="border: 1px solid #1a1b24; border-radius: 0 0 8px 8px; background: #0a0b0f; padding: 6rem 1rem; text-align: center; color: #475569;">'
-            '<h3>CANVAS IDLE</h3>'
-            'Awaiting agent build output.'
-            '</div>',
-            unsafe_allow_html=True,
-        )
